@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+
+runtime/audio/*
+!runtime/audio/.gitkeep
+logs/*
+!logs/.gitkeep
+sessions/*
+!sessions/.gitkeep
+
+.claude/

@@ -1,0 +1,78 @@
+audio_output: pc            # pc | nao
+body: console               # console | nao          — §12.6
+
+lecture:
+  pptx_path: ./content/lecture.pptx
+  qa_material: ./content/qa_material.md
+
+llm:
+  model: llama3.1:8b-instruct-q4_K_M   # fallback build in use — see CLAUDE.md "Environment"
+  host: http://localhost:11434
+  keep_alive: 30m
+  num_ctx: 8192             # CRITICAL — default truncates silently (§3.1)
+  temperature: 0.3
+  presence_penalty: 0       # override registry default — §3.1
+  num_predict: 200          # hard backstop on answer length
+  max_answer_sentences: 4
+  qa_material_token_cap: 3500
+  followup_turn_cap: 6
+
+stt:
+  model: small
+  device: cpu
+  compute_type: int8
+
+tts:
+  voice: en_US-lessac-medium
+  sample_rate: 16000        # resample target (Piper emits 22050) — §12.2
+  channels: 1
+  filler_variants: 4        # stage-1 clips pre-synthesized at startup
+
+audio:
+  temp_dir: ./runtime/audio
+  ready_queue_size: 2       # §4.4 double-buffer depth
+  min_sentence_chars: 20
+  max_sentence_chars: 300
+
+slides:
+  display: 2                # projector monitor index
+  com_timeout_s: 5
+
+timings:
+  reply_window_s: 5
+  compose_window_s: 30
+  max_recording_s: 30
+  max_typed_chars: 500
+  question_repeat_max_words: 25
+
+server:
+  mode: lan                 # lan | tunnel   — §9.1
+  host: 0.0.0.0
+  port: 8000
+  public_url:                # optional manual override of the tunnel URL
+  operator_token: change-me  # TODO: set a real token before any real demo
+  max_students: 5
+
+paths:
+  sessions_dir: ./sessions
+  logs_dir: ./logs
+
+gestures:
+  library: ./content/gestures.yaml
+  enabled: true
+  interval_s: [8, 12]       # jittered range between gestures — §12.4.1
+  speed: 0.15               # ALMotion max-speed fraction, 0.10–0.20 — §12.4.4
+  previewer: true           # stick-figure preview on operator console
+
+nao:
+  bridge_url: http://192.168.1.50:8765   # TODO: set to the robot's real address in Phase 6
+  audio_dir: /home/nao/lecture_audio
+  volume: 70                # 0–100, set explicitly at lecture start — §12.5
+  timeouts:                 # §12.1.2
+    connect_s: 1.0
+    stop_s: 1.5
+    motion_s: 1.5
+    health_s: 2.0
+    upload_s: 10.0
+    posture_s: 15.0
+    play_margin_s: 5.0      # added to WAV duration
