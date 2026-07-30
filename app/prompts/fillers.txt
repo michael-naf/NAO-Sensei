@@ -1,0 +1,17 @@
+[stage1]
+Question received — analysing.
+Good question — let me think about that.
+Got it — give me one moment.
+Let me check the material on that.
+
+[stage2]
+You asked: {question}
+
+[decline]
+Let's keep our questions about dinosaurs and be respectful, please.
+
+[qa_start]
+I will answer some questions now.
+
+[qa_end]
+Let's go on with the presentation.

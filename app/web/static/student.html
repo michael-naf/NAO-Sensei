@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NAO Lecturer — Questions</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    margin: 0; padding: 1.25rem;
+    max-width: 480px; margin-inline: auto;
+    background: #0b1220; color: #e8ecf4;
+    min-height: 100vh;
+  }
+  h1 { font-size: 1.1rem; font-weight: 600; opacity: .85; margin: 0 0 .25rem; }
+  .status-line { font-size: .85rem; opacity: .6; margin-bottom: 1.5rem; }
+  .card {
+    background: #151f38; border-radius: 14px; padding: 1.25rem;
+    margin-bottom: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  }
+  .name-field { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  input[type=text], textarea {
+    width: 100%; background: #0b1220; color: #e8ecf4;
+    border: 1px solid #2a3757; border-radius: 8px; padding: .6rem .75rem;
+    font-size: 1rem; font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 5rem; }
+  button {
+    background: #3b6fed; color: white; border: none; border-radius: 8px;
+    padding: .7rem 1.1rem; font-size: 1rem; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: #2a3757; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: .6rem; margin-top: .75rem; flex-wrap: wrap; }
+  .muted { opacity: .65; font-size: .9rem; }
+  .big { font-size: 1.4rem; font-weight: 700; }
+  .countdown { font-variant-numeric: tabular-nums; opacity: .7; }
+  .answer-text { line-height: 1.5; margin: .5rem 0 0; }
+  .char-count { text-align: right; font-size: .78rem; opacity: .5; margin-top: .25rem; }
+  #paused-banner {
+    display: none; background: #5a3b0a; color: #ffd48a; border-radius: 10px;
+    padding: .75rem 1rem; margin-bottom: 1rem; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <h1>NAO Lecturer</h1>
+  <div class="status-line" id="conn-status">connecting…</div>
+  <div id="paused-banner">Lecture paused — hang tight, your place in the queue is kept.</div>
+
+  <div class="card" id="name-card">
+    <div class="name-field">
+      <input type="text" id="display-name" maxlength="40" placeholder="Nickname (optional, no real names)" />
+    </div>
+  </div>
+
+  <!-- IDLE -->
+  <div class="card" id="view-idle">
+    <p class="muted">Ready when you are.</p>
+    <button id="btn-ask">Ask a question</button>
+  </div>
+
+  <!-- QUEUED -->
+  <div class="card" id="view-queued" style="display:none">
+    <p class="muted">Your position in the queue</p>
+    <p class="big" id="queue-position">—</p>
+    <button class="secondary" id="btn-leave">Leave queue</button>
+  </div>
+
+  <!-- YOUR TURN -->
+  <div class="card" id="view-turn" style="display:none">
+    <p class="muted" id="turn-label">Your turn — ask NAO something.</p>
+    <textarea id="turn-text" maxlength="500" placeholder="Type your question…"></textarea>
+    <div class="char-count"><span id="turn-count">0</span>/500</div>
+    <div class="row">
+      <button id="btn-turn-submit">Send</button>
+      <span class="countdown" id="turn-countdown"></span>
+    </div>
+  </div>
+
+  <!-- SUBMITTED -->
+  <div class="card" id="view-submitted" style="display:none">
+    <p class="big">Submitted — NAO is answering.</p>
+  </div>
+
+  <!-- ANSWERED -->
+  <div class="card" id="view-answered" style="display:none">
+    <p class="muted">NAO answered:</p>
+    <p class="answer-text" id="answer-text"></p>
+    <div class="row" id="answered-actions">
+      <button id="btn-reply">Reply</button>
+      <button class="secondary" id="btn-done">Done</button>
+      <button class="secondary" id="btn-ok" style="display:none">OK</button>
+      <span class="countdown" id="answered-countdown"></span>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const STORAGE_KEY = "nao_student_id";
+  let studentId = localStorage.getItem(STORAGE_KEY);
+  if (!studentId) {
+    studentId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+    localStorage.setItem(STORAGE_KEY, studentId);
+  }
+
+  const views = ["idle", "queued", "turn", "submitted", "answered"];
+  function show(name) {
+    for (const v of views) {
+      document.getElementById("view-" + v).style.display = (v === name) ? "" : "none";
+    }
+  }
+
+  const el = (id) => document.getElementById(id);
+  const connStatus = el("conn-status");
+  const pausedBanner = el("paused-banner");
+
+  let turnMode = "initial"; // 'initial' | 'reply'
+  let countdownTimer = null;
+
+  function clearCountdown() {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  }
+
+  function startCountdown(targetEl, seconds) {
+    clearCountdown();
+    let remaining = Math.ceil(seconds);
+    targetEl.textContent = remaining + "s";
+    countdownTimer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) { clearCountdown(); targetEl.textContent = ""; return; }
+      targetEl.textContent = remaining + "s";
+    }, 1000);
+  }
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ student_id: studentId }, body || {})),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || ("Request failed: " + res.status));
+    }
+    return res.json();
+  }
+
+  el("btn-ask").addEventListener("click", async () => {
+    const displayName = el("display-name").value.trim() || null;
+    try {
+      const r = await api("/api/join", { display_name: displayName });
+      el("queue-position").textContent = r.position != null ? "#" + r.position : "—";
+      show("queued");
+    } catch (e) { alert(e.message); }
+  });
+
+  el("btn-leave").addEventListener("click", async () => {
+    try { await api("/api/leave"); } catch (e) { /* ignore */ }
+    show("idle");
+  });
+
+  el("turn-text").addEventListener("input", () => {
+    el("turn-count").textContent = el("turn-text").value.length;
+  });
+
+  el("btn-turn-submit").addEventListener("click", async () => {
+    const text = el("turn-text").value.trim();
+    if (!text) return;
+    try {
+      if (turnMode === "initial") {
+        await api("/api/submit", { text });
+      } else {
+        await api("/api/reply_text", { text });
+      }
+      el("turn-text").value = "";
+      el("turn-count").textContent = "0";
+      show("submitted");
+      clearCountdown();
+    } catch (e) { alert(e.message); }
+  });
+
+  el("btn-reply").addEventListener("click", async () => {
+    try { await api("/api/reply"); } catch (e) { alert(e.message); }
+  });
+
+  el("btn-done").addEventListener("click", async () => {
+    try { await api("/api/done"); } catch (e) { /* ignore */ }
+    clearCountdown();
+    show("idle");
+  });
+
+  el("btn-ok").addEventListener("click", () => {
+    clearCountdown();
+    show("idle");
+  });
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(proto + "//" + location.host + "/ws/" + studentId);
+
+    ws.onopen = () => { connStatus.textContent = "connected"; };
+    ws.onclose = () => { connStatus.textContent = "reconnecting…"; setTimeout(connect, 2000); };
+    ws.onerror = () => { ws.close(); };
+
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      handleMessage(msg);
+    };
+  }
+
+  function handleMessage(msg) {
+    switch (msg.type) {
+      case "sync":
+        pausedBanner.style.display = (msg.lecture_status === "PAUSED") ? "" : "none";
+        if (msg.queue_position != null) {
+          el("queue-position").textContent = "#" + msg.queue_position;
+          show("queued");
+        }
+        break;
+      case "lecture_status":
+        pausedBanner.style.display = (msg.state === "PAUSED") ? "" : "none";
+        break;
+      case "queue_position":
+        if (msg.position != null) {
+          el("queue-position").textContent = "#" + msg.position;
+          if (document.getElementById("view-queued").style.display !== "") show("queued");
+        }
+        break;
+      case "your_turn":
+        turnMode = "initial";
+        el("turn-label").textContent = "Your turn — ask NAO something.";
+        el("turn-countdown").textContent = "";
+        show("turn");
+        break;
+      case "submitted":
+        show("submitted");
+        break;
+      case "answered":
+        el("answer-text").textContent = msg.answer || "";
+        el("answered-actions").style.display = "";
+        el("btn-reply").style.display = msg.reply_allowed ? "" : "none";
+        el("btn-done").style.display = msg.reply_allowed ? "" : "none";
+        el("btn-ok").style.display = msg.reply_allowed ? "none" : "";
+        el("answered-countdown").textContent = "";
+        show("answered");
+        if (msg.reply_allowed && msg.window_s) {
+          startCountdown(el("answered-countdown"), msg.window_s);
+        }
+        break;
+      case "reply_window":
+        turnMode = "reply";
+        el("turn-label").textContent = "Reply — same conversation.";
+        show("turn");
+        if (msg.window_s) startCountdown(el("turn-countdown"), msg.window_s);
+        break;
+      case "turn_ended":
+        // The server enforces the 5s/30s windows; this is its push once
+        // either one closes without the student having replied/submitted,
+        // so a stalled screen doesn't just sit there with no way out.
+        clearCountdown();
+        show("idle");
+        break;
+    }
+  }
+
+  connect();
+  show("idle");
+})();
+</script>
+</body>
+</html>

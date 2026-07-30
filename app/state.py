@@ -20,7 +20,11 @@ class LectureState(Enum):
 _VALID_TRANSITIONS: dict[LectureState, set[LectureState]] = {
     LectureState.IDLE: {LectureState.READY},
     LectureState.READY: {LectureState.NARRATING},
-    LectureState.NARRATING: {LectureState.CHECKPOINT, LectureState.PAUSED},
+    # NARRATING -> FINISHED covers one edge §6.1's table implies but doesn't
+    # spell out: when the *last* section's checkpoint has a non-empty queue,
+    # ANSWERING drains it and returns to NARRATING (per the table's own "ANSWERING
+    # -> NARRATING when the queue empties" row) with no section left to narrate.
+    LectureState.NARRATING: {LectureState.CHECKPOINT, LectureState.PAUSED, LectureState.FINISHED},
     LectureState.CHECKPOINT: {
         LectureState.NARRATING,
         LectureState.ANSWERING,
