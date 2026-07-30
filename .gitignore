@@ -11,4 +11,8 @@ logs/*
 sessions/*
 !sessions/.gitkeep
 
+# Piper voice models — large binaries fetched on demand, not source.
+# Re-download: python -m piper.download_voices --download-dir ./voices <name>
+voices/
+
 .claude/

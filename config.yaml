@@ -23,10 +23,21 @@ stt:
   compute_type: int8
 
 tts:
-  voice: en_US-lessac-medium
+  voice: en_US-ryan-medium
   sample_rate: 16000        # resample target (Piper emits 22050) — §12.2
   channels: 1
   filler_variants: 4        # stage-1 clips pre-synthesized at startup
+  length_scale: 1.25        # Piper phoneme-length multiplier; >1 = slower.
+                             # 1.0 felt rushed to a listener, no breathing room.
+                             # Scaling is non-linear — 1.15 only bought ~5%
+                             # actual duration, 1.25 gets closer to ~15-20%
+  trailing_silence_ms: 250  # natural pause baked into every clip's tail —
+                             # the queue itself plays back-to-back with no
+                             # gap of its own, so pacing lives in the audio
+  section_gap_ms: 450       # EXTRA pause between sections, on top of the
+                             # trailing_silence_ms already on the last
+                             # sentence — makes section breaks read as
+                             # distinct beats, not just another sentence gap
 
 audio:
   temp_dir: ./runtime/audio
