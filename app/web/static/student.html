@@ -43,12 +43,17 @@
     display: none; background: #5a3b0a; color: #ffd48a; border-radius: 10px;
     padding: .75rem 1rem; margin-bottom: 1rem; font-weight: 600;
   }
+  #qa-unavailable-banner {
+    display: none; background: #4a1f24; color: #ffb4bd; border-radius: 10px;
+    padding: .75rem 1rem; margin-bottom: 1rem; font-weight: 600;
+  }
 </style>
 </head>
 <body>
   <h1>NAO Lecturer</h1>
   <div class="status-line" id="conn-status">connecting…</div>
   <div id="paused-banner">Lecture paused — hang tight, your place in the queue is kept.</div>
+  <div id="qa-unavailable-banner">Questions are temporarily unavailable — narration continues.</div>
 
   <div class="card" id="name-card">
     <div class="name-field">
@@ -117,6 +122,7 @@
   const el = (id) => document.getElementById(id);
   const connStatus = el("conn-status");
   const pausedBanner = el("paused-banner");
+  const qaUnavailableBanner = el("qa-unavailable-banner");
 
   let turnMode = "initial"; // 'initial' | 'reply'
   let countdownTimer = null;
@@ -355,6 +361,20 @@
         // The server enforces the 5s/30s windows; this is its push once
         // either one closes without the student having replied/submitted,
         // so a stalled screen doesn't just sit there with no way out.
+        clearCountdown();
+        show("idle");
+        break;
+      case "qa_unavailable":
+        // §11 — Ollama is unreachable; the queue is frozen (not dropped)
+        // until it's confirmed reachable again at a later checkpoint.
+        qaUnavailableBanner.style.display = "";
+        break;
+      case "qa_available":
+        qaUnavailableBanner.style.display = "none";
+        break;
+      case "queue_cleared":
+        // Operator "Clear queue" (§10.2) — only reaches students who were
+        // still waiting; an active turn already in progress is unaffected.
         clearCountdown();
         show("idle");
         break;

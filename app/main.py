@@ -34,7 +34,6 @@ from app.script_parser import parse, validate
 from app.services import llm
 from app.slides import SlideController, SlideControllerError
 from app.state import LectureState
-from app.transcript import Transcript
 from app.web.server import ConnectionManager, create_app
 from app.web.tunnel import Tunnel, print_qr
 
@@ -140,7 +139,6 @@ async def _run_lecture() -> int:
     playback = PlaybackQueue(sink)
     slides = SlideController()
     question_queue = QuestionQueue()
-    transcript = Transcript(cfg.paths.sessions_dir)
     connections = ConnectionManager()
 
     try:
@@ -149,8 +147,12 @@ async def _run_lecture() -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
+    # No Transcript constructed here — the orchestrator creates its own,
+    # fresh, each time a lecture actually starts (Orchestrator.run() /
+    # _wait_for_start()), so a restart gets a new file instead of
+    # appending to the previous lecture's.
     orchestrator = Orchestrator(
-        script, slides, playback, question_queue, transcript, connections,
+        script, slides, playback, question_queue, connections,
         body=body, scheduler=scheduler,
     )
 
@@ -163,10 +165,17 @@ async def _run_lecture() -> int:
 
     loop = asyncio.get_running_loop()
     public_url, tunnel = await _setup_public_url(loop)
+    app.state.join_url = public_url  # §10.1 — operator console QR/join URL; None means Mode A (LAN only)
 
     print(f"Narrating {cfg.lecture.pptx_path} ({script.slide_count} slides, "
           f"{len(script.sections)} sections)...")
-    print(f"Transcript: {transcript.path}")
+    # Transcript path is no longer printed here — it doesn't exist until
+    # the first Start (Orchestrator._wait_for_start() prints it itself,
+    # fresh, every time a lecture actually begins).
+    # §10.1/§10.3 — the operator console is for the lecturer's own device or
+    # display 1, so localhost is the primary case; the token in the URL is
+    # a LAN convenience measure (§10.3), not a security boundary.
+    print(f"Operator console: http://localhost:{cfg.server.port}/operator?token={cfg.server.operator_token}")
     if public_url:
         print(f"Student app (voice enabled): {public_url}")
         print_qr(public_url)
@@ -201,10 +210,11 @@ async def _run_lecture() -> int:
     if tunnel is not None:
         tunnel.stop()
 
-    # This one-shot CLI run has no operator console to issue "End lecture" —
-    # close PowerPoint ourselves so the process doesn't linger after the
-    # script exits. If PowerPoint is already gone (e.g. the fault we're
-    # cleaning up after was it dying), close() will fault too — expected.
+    # Belt-and-suspenders close: the normal Exit path already closed
+    # PowerPoint via _end_lecture_shutdown()/_finish_and_rearm() before
+    # run() ever returned (so this raises harmlessly, caught below) — this
+    # matters for the crash path (lecture_failed), where the orchestrator
+    # never got to clean up after itself.
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, slides.close)
@@ -218,7 +228,10 @@ async def _run_lecture() -> int:
         print(f"Lecture PAUSED — {orchestrator.fault_message}")
         return 1
 
-    print("Lecture FINISHED.")
+    # run() only returns normally via an explicit operator Exit now (see
+    # Orchestrator.request_exit()) — a natural lecture finish, or an
+    # operator End lecture, both loop back for another Start instead.
+    print("Application closed (operator Exit).")
     return 0
 
 

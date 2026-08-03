@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NAO Lecturer — Operator Console</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    margin: 0; padding: 1.25rem;
+    background: #0b1220; color: #e8ecf4;
+    min-height: 100vh;
+  }
+  h1 { font-size: 1.2rem; font-weight: 600; margin: 0 0 .25rem; }
+  h2 { font-size: .95rem; font-weight: 600; opacity: .75; margin: 0 0 .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  .status-line { font-size: .85rem; opacity: .6; margin-bottom: 1rem; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1rem; max-width: 1400px; margin: 0 auto;
+  }
+  .card {
+    background: #151f38; border-radius: 14px; padding: 1.1rem 1.25rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  }
+  button {
+    background: #3b6fed; color: white; border: none; border-radius: 8px;
+    padding: .55rem .9rem; font-size: .9rem; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: #2a3757; }
+  button.danger { background: #a5332a; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .5rem; }
+  .muted { opacity: .65; font-size: .85rem; }
+  .big { font-size: 1.6rem; font-weight: 700; }
+  .badge {
+    display: inline-block; padding: .2rem .6rem; border-radius: 999px;
+    font-size: .8rem; font-weight: 700; letter-spacing: .03em;
+  }
+  .badge-idle, .badge-ready, .badge-finished { background: #2a3757; color: #b7c2e0; }
+  .badge-narrating { background: #274a2c; color: #9fe6ab; }
+  .badge-checkpoint { background: #1f4d3f; color: #7fe0c4; }
+  .badge-answering { background: #1f3a5f; color: #8fc3ff; }
+  .badge-paused { background: #5a4a0a; color: #ffe08a; }
+  .section-text { white-space: pre-wrap; line-height: 1.5; max-height: 8rem; overflow-y: auto; margin: 0; }
+  .health-row { display: flex; justify-content: space-between; align-items: center; padding: .35rem 0; border-bottom: 1px solid #202b47; }
+  .health-row:last-child { border-bottom: none; }
+  .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .5rem; vertical-align: middle; }
+  .dot-ok { background: #4ade80; }
+  .dot-down { background: #f87171; }
+  .dot-na { background: #5b6685; }
+  .dot-unknown { background: #f5b942; }
+  ol#queue-list { margin: 0; padding-left: 1.2rem; }
+  ol#queue-list li { margin-bottom: .3rem; }
+  #fault-banner {
+    display: none; background: #5a1f1f; color: #ffb4b4; border-radius: 10px;
+    padding: 1rem 1.25rem; margin-bottom: 1rem; font-weight: 600; max-width: 1400px; margin-inline: auto;
+  }
+  #qa-disabled-banner {
+    display: none; background: #4a1f24; color: #ffb4bd; border-radius: 10px;
+    padding: .6rem 1rem; margin-top: .5rem; font-weight: 600; font-size: .85rem;
+  }
+  a.link { color: #8fc3ff; }
+  img#qr-img { background: white; padding: .4rem; border-radius: 8px; max-width: 160px; display: block; }
+</style>
+</head>
+<body>
+  <h1>NAO Lecturer — Operator Console</h1>
+  <div class="status-line" id="poll-status">connecting…</div>
+
+  <div id="fault-banner">
+    <div id="fault-message"></div>
+    <div class="row" style="margin-top:.75rem">
+      <button id="btn-reopen">Reopen deck</button>
+      <button class="secondary" id="btn-resume-no-slides">Resume without slides</button>
+      <button class="danger" id="btn-end-from-fault">End lecture</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Status</h2>
+      <p><span class="badge" id="state-badge">—</span></p>
+      <p class="muted" id="position-line">—</p>
+      <p class="section-text" id="section-text"></p>
+      <div id="qa-disabled-banner">Q&amp;A disabled — Ollama unreachable. Narration continues; the queue is frozen, not dropped.</div>
+    </div>
+
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="row">
+        <button id="btn-start">Start</button>
+        <button class="secondary" id="btn-pause-resume">Pause</button>
+        <button class="secondary" id="btn-skip-section">Skip section</button>
+        <button class="secondary" id="btn-skip-question">Skip question</button>
+        <button class="secondary" id="btn-clear-queue">Clear queue</button>
+        <button class="danger" id="btn-end-lecture">End lecture</button>
+        <button class="danger" id="btn-exit">Exit</button>
+      </div>
+      <p class="muted" id="control-feedback"></p>
+    </div>
+
+    <div class="card">
+      <h2>Queue (<span id="queue-count">0</span>)</h2>
+      <ol id="queue-list"></ol>
+    </div>
+
+    <div class="card">
+      <h2>Current Q&amp;A</h2>
+      <p class="muted">Question</p>
+      <p id="current-question">—</p>
+      <p class="muted">Answer</p>
+      <p id="current-answer">—</p>
+    </div>
+
+    <div class="card">
+      <h2>Component health</h2>
+      <div class="health-row"><span>LLM (Ollama)</span><span id="health-llm">—</span></div>
+      <div class="health-row"><span>STT (Whisper)</span><span id="health-stt">—</span></div>
+      <div class="health-row"><span>TTS (Piper)</span><span id="health-tts">—</span></div>
+      <div class="health-row"><span>PowerPoint</span><span id="health-powerpoint">—</span></div>
+      <div class="health-row"><span>NAO</span><span id="health-nao">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Students</h2>
+      <p class="muted">Questions answered</p>
+      <p class="big" id="questions-answered">0</p>
+      <p><a class="link" id="transcript-link" href="#" target="_blank">Download transcript</a></p>
+      <p class="muted" id="join-url-line" style="margin-top:.75rem"></p>
+      <img id="qr-img" style="display:none" />
+    </div>
+  </div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const token = params.get("token") || "";
+  const q = (path) => path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+
+  const el = (id) => document.getElementById(id);
+  const pollStatus = el("poll-status");
+  const feedback = el("control-feedback");
+
+  async function api(path, method) {
+    const res = await fetch(q(path), { method: method || "GET" });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || ("Request failed: " + res.status));
+    }
+    return res.json();
+  }
+
+  function post(path, confirmMsg) {
+    return async () => {
+      if (confirmMsg && !confirm(confirmMsg)) return;
+      feedback.textContent = "";
+      try {
+        await api(path, "POST");
+      } catch (e) {
+        feedback.textContent = e.message;
+      }
+    };
+  }
+
+  el("btn-start").addEventListener("click", post("/api/operator/start"));
+  el("btn-skip-question").addEventListener("click", post("/api/operator/skip_question"));
+  el("btn-reopen").addEventListener("click", post("/api/operator/reopen_deck"));
+  el("btn-resume-no-slides").addEventListener("click", post("/api/operator/resume_without_slides"));
+  el("btn-end-from-fault").addEventListener("click", post("/api/operator/end_lecture", "End the lecture now?"));
+  el("btn-end-lecture").addEventListener("click", post("/api/operator/end_lecture", "End the lecture now? This cannot be undone."));
+  el("btn-exit").addEventListener("click", post("/api/operator/exit", "Close the whole application now? This ends any lecture in progress and shuts the process down — you'll need to relaunch it to run again."));
+
+  el("btn-clear-queue").addEventListener("click", async () => {
+    const size = parseInt(el("queue-count").textContent, 10) || 0;
+    if (!confirm(`Drop all ${size} waiting student(s) from the queue?`)) return;
+    feedback.textContent = "";
+    try { await api("/api/operator/clear_queue", "POST"); } catch (e) { feedback.textContent = e.message; }
+  });
+
+  el("btn-skip-section").addEventListener("click", async () => {
+    const size = parseInt(el("queue-count").textContent, 10) || 0;
+    if (!confirm(`Skip the rest of this section and advance? This also clears the queue (${size} waiting).`)) return;
+    feedback.textContent = "";
+    try { await api("/api/operator/skip_section", "POST"); } catch (e) { feedback.textContent = e.message; }
+  });
+
+  el("btn-pause-resume").addEventListener("click", async () => {
+    feedback.textContent = "";
+    const isPaused = el("state-badge").dataset.state === "PAUSED";
+    try {
+      await api(isPaused ? "/api/operator/resume" : "/api/operator/pause", "POST");
+    } catch (e) { feedback.textContent = e.message; }
+  });
+
+  const HEALTH_LABEL = { ok: "OK", down: "down", "n/a": "n/a", unknown: "unknown" };
+  const HEALTH_DOT = { ok: "dot-ok", down: "dot-down", "n/a": "dot-na", unknown: "dot-unknown" };
+
+  function renderHealth(id, value) {
+    const dotClass = HEALTH_DOT[value] || "dot-unknown";
+    el(id).innerHTML = `<span class="dot ${dotClass}"></span>${HEALTH_LABEL[value] || value}`;
+  }
+
+  let qrLoaded = false;
+
+  function render(s) {
+    const badge = el("state-badge");
+    badge.textContent = s.state;
+    badge.className = "badge badge-" + s.state.toLowerCase();
+    badge.dataset.state = s.state;
+
+    el("position-line").textContent = (s.slide_index != null)
+      ? `Slide ${s.slide_index} / ${s.total_slides} — section ${s.section_index} / ${s.total_sections}`
+      : "Not started";
+    el("section-text").textContent = s.current_section_text || "";
+    el("qa-disabled-banner").style.display = s.qa_disabled ? "" : "none";
+
+    el("btn-start").disabled = s.state !== "READY";
+    el("btn-pause-resume").textContent = s.state === "PAUSED" ? "Resume" : "Pause";
+    el("btn-pause-resume").disabled = !["NARRATING", "CHECKPOINT", "ANSWERING", "PAUSED"].includes(s.state)
+      || (s.state === "PAUSED" && s.fault_pending);
+    el("btn-skip-section").disabled = !["NARRATING", "CHECKPOINT"].includes(s.state);
+    el("btn-skip-question").disabled = s.state !== "ANSWERING";
+    el("btn-clear-queue").disabled = s.queue_size === 0;
+    el("btn-end-lecture").disabled = ["IDLE", "FINISHED"].includes(s.state);
+
+    el("fault-banner").style.display = s.fault_pending ? "" : "none";
+    el("fault-message").textContent = s.fault_message || "";
+
+    el("queue-count").textContent = s.queue_size;
+    const list = el("queue-list");
+    list.innerHTML = "";
+    for (const entry of s.queue) {
+      const li = document.createElement("li");
+      li.textContent = entry.label;
+      list.appendChild(li);
+    }
+
+    el("current-question").textContent = s.current_question || "—";
+    el("current-answer").textContent = s.current_answer || "—";
+
+    renderHealth("health-llm", s.health.llm);
+    renderHealth("health-stt", s.health.stt);
+    renderHealth("health-tts", s.health.tts);
+    renderHealth("health-powerpoint", s.health.powerpoint);
+    renderHealth("health-nao", s.health.nao);
+
+    el("questions-answered").textContent = s.questions_answered;
+    el("transcript-link").href = q("/api/operator/transcript");
+
+    if (s.join_url) {
+      el("join-url-line").textContent = s.join_url;
+      if (!qrLoaded) {
+        el("qr-img").src = q("/api/operator/qr");
+        el("qr-img").style.display = "";
+        qrLoaded = true;
+      }
+    } else {
+      el("join-url-line").textContent = "Mode A (LAN only) — students use this PC's LAN IP, typed questions only.";
+    }
+  }
+
+  async function poll() {
+    try {
+      const s = await api("/api/operator/state");
+      pollStatus.textContent = "connected";
+      render(s);
+    } catch (e) {
+      pollStatus.textContent = "disconnected — " + e.message;
+    }
+  }
+
+  poll();
+  setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>

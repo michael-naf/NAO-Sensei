@@ -60,6 +60,14 @@ class QuestionQueue:
     def positions(self) -> dict[str, int]:
         return {sid: i + 1 for i, sid in enumerate(self._entries)}
 
+    def list_entries(self) -> list[dict]:
+        """For the operator console's live queue display (§10.1) — labels
+        and positions, not the raw internal dict."""
+        return [
+            {"student_id": entry.student.student_id, "label": entry.student.label, "position": i + 1}
+            for i, entry in enumerate(self._entries.values())
+        ]
+
     def pop_next(self) -> QueueEntry | None:
         if not self._entries:
             return None

@@ -48,7 +48,6 @@ class Orchestrator:
         slides: SlideController,
         playback: PlaybackQueue,
         queue: QuestionQueue,
-        transcript: Transcript,
         notifier: Notifier | None = None,
         body: Body | None = None,
         scheduler: Scheduler | None = None,
@@ -57,7 +56,11 @@ class Orchestrator:
         self._slides = slides
         self._playback = playback
         self._queue = queue
-        self._transcript = transcript
+        # Created fresh in _wait_for_start() each time a lecture actually
+        # begins, not injected — a restart (§10.2 End lecture, or a natural
+        # finish looping back) gets its own transcript file rather than
+        # appending to the previous lecture's. None until the first Start.
+        self._transcript: Transcript | None = None
         self._notifier = notifier
         self._body = body
         self._scheduler = scheduler
@@ -65,12 +68,34 @@ class Orchestrator:
         self.state = LectureStateMachine()
         self.position = 0  # index into script.sections — the source of truth
         self.fault_message: str | None = None
+        self.qa_disabled = False  # §11 — set at checkpoint time when Ollama is unreachable
+
+        # §10.1 console display — best-effort snapshot, not a source of truth
+        # for anything else.
+        self.current_section_text: str | None = None
+        self.current_question: str | None = None
+        self.current_answer: str | None = None
+        self.questions_answered = 0
 
         self._last_slide_index: int | None = None
+        self._slides_broken = False  # set by resume_without_slides() — see _handle_slide_fault
+        self._pptx_path: str | None = None
         self._turn_id = 0
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._own_task: asyncio.Task | None = None
+        self._exit_requested = False  # operator "Exit" — see request_exit()
         self._idle_event: asyncio.Event | None = None
         self._start_event: asyncio.Event | None = None
+        self._skip_event: asyncio.Event | None = None  # operator "Skip question" — see skip_question()
+        # Set whenever not paused, cleared by pause()/_on_fault(), set again
+        # by resume()/_handle_slide_fault()'s resolution. _narrate() and
+        # _drain_queue() await this at every point that isn't already
+        # gated by playback (the section-gap sleep, between Q&A turns) so a
+        # pause landing there actually holds instead of being silently run
+        # through — see the _VALID_TRANSITIONS[PAUSED] comment in state.py
+        # for the bug this replaces.
+        self._paused_event: asyncio.Event | None = None
+        self._fault_future: asyncio.Future | None = None  # operator's slide-fault resolution — see _handle_slide_fault
 
         # Per-utterance completion tracking (§4.4's on_utterance_end), used
         # instead of on_idle wherever utterances are enqueued incrementally
@@ -97,12 +122,78 @@ class Orchestrator:
 
     async def run(self, pptx_path: str) -> None:
         self._loop = asyncio.get_running_loop()
+        self._own_task = asyncio.current_task()
+        self._pptx_path = pptx_path
         self._idle_event = asyncio.Event()
-        self._start_event = asyncio.Event()
         self._finish_event = asyncio.Event()
+        self._skip_event = asyncio.Event()
+        self._paused_event = asyncio.Event()
+        self._paused_event.set()
         self._playback.on_idle = self._handle_idle
         self._playback.on_utterance_end = self._handle_utterance_end
 
+        # Models are warmed exactly once per process, ever — not per lecture
+        # run. See "Model lifetime" in CLAUDE.md's Gotchas: re-warming would
+        # pay the ~10s cold-load cost again on every restart.
+        await self._warm_up_models()
+
+        # End lecture (§10.2) *and* a natural finish both return to IDLE and
+        # must genuinely be able to Start again without relaunching the
+        # process — state.py's IDLE -> READY edge already supports it; this
+        # loop is what actually uses it. Exit (below) uses the exact same
+        # cancellation path as End lecture but breaks out of the loop
+        # instead of re-arming, so it's the only way run() itself returns
+        # during normal operation — everything else (a natural finish, an
+        # operator End lecture) loops back for another Start.
+        while True:
+            self._reset_for_new_lecture()
+            try:
+                await self._wait_for_start()
+                await self._narrate(pptx_path)
+                # _narrate() already set FINISHED and tore down the
+                # body/scheduler inline. Symmetric with
+                # _end_lecture_shutdown() below: close PowerPoint and drop
+                # back to IDLE so the loop can wait for another Start,
+                # rather than main.py treating this as "the process is over"
+                # the way it used to.
+                await self._finish_and_rearm()
+            except asyncio.CancelledError:
+                # Operator "End lecture" (§10.2) *and* "Exit" (§10.2 update,
+                # 2026-08-03) both cancel this task directly — the simplest
+                # way to unblock whichever of the many awaits above we
+                # happened to be sitting on (a rendezvous future, on_idle,
+                # an executor future, a slide-fault hold, asyncio.sleep, or
+                # _wait_for_start()'s own wait for the next Start) without
+                # threading a checked flag through every one of them
+                # individually. The normal FINISHED completion path never
+                # raises this and does its own equivalent teardown via
+                # _finish_and_rearm() instead, so _end_lecture_shutdown()
+                # must only run here, not in a blanket `finally`.
+                await self._end_lecture_shutdown()
+                if self._exit_requested:
+                    return  # lets main.py's existing shutdown path run
+                # Otherwise loop back to _wait_for_start() — cancel() can be
+                # called again later without any special re-arming: catching
+                # CancelledError here without re-raising leaves this task in
+                # a normal (not cancelled) state as far as asyncio is
+                # concerned.
+
+    async def _finish_and_rearm(self) -> None:
+        """Runs once, right after _narrate() completes a lecture normally.
+        Mirrors _end_lecture_shutdown()'s slides-close + back-to-IDLE, just
+        without the queue-clear/stiffness-off steps _narrate()'s own
+        FINISHED handling and _drain_queue()'s drain-to-empty already
+        cover."""
+        assert self._loop is not None
+        try:
+            await self._loop.run_in_executor(None, self._slides.close)
+        except SlideControllerError:
+            pass
+        self.state.transition(LectureState.IDLE)
+        await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
+
+    async def _warm_up_models(self) -> None:
+        assert self._loop is not None
         # §6.1: IDLE -> READY happens "on successful load + model warm-up".
         # All three models (Piper, Whisper, Ollama) are warmed unconditionally
         # — Mode A/B can differ at runtime without an app restart (§9.1), so
@@ -112,39 +203,86 @@ class Orchestrator:
         await self._loop.run_in_executor(None, stt.warm)
         await self._filler_bank.warm(self._loop)
 
+    def _reset_for_new_lecture(self) -> None:
+        """Runs immediately after the previous lecture ends (shutdown or
+        rearm), before waiting for the next Start — clears the "what's
+        currently happening" display fields so READY doesn't show stale
+        narration/Q&A. Deliberately leaves questions_answered and the
+        transcript alone: those describe the *completed* lecture and stay
+        valid (and downloadable) right up until the operator actually
+        starts a new one — see _wait_for_start()."""
+        self.position = 0
+        self._last_slide_index = None
+        self._slides_broken = False
+        self.current_section_text = None
+        self.current_question = None
+        self.current_answer = None
+        self.fault_message = None
+        self.qa_disabled = False
+        assert self._paused_event is not None
+        self._paused_event.set()
+
+    async def _wait_for_start(self) -> None:
+        assert self._loop is not None
+        self._start_event = asyncio.Event()
+
         self.state.transition(LectureState.READY)
         self._set_body_state(LectureState.READY)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
 
         # READY is "not started" until an operator start (§6.1) — students
-        # can connect and see live status while this waits. The real Start
-        # control belongs to the Phase 5 operator console; start() below is
-        # the minimal piece of that wiring needed now, with no console, no
-        # auth, and none of the other six controls pulled forward.
+        # can connect and see live status while this waits.
         await self._start_event.wait()
+
+        # Only now — the instant a new lecture actually begins, not right
+        # after the previous one ended — does the question count reset and
+        # a fresh transcript file start. Until this point the console and
+        # the /transcript download both still reflect the lecture that just
+        # finished.
+        self._transcript = Transcript(cfg.paths.sessions_dir)
+        self.questions_answered = 0
+        print(f"Transcript: {self._transcript.path}")
 
         self.state.transition(LectureState.NARRATING)
         self._set_body_state(LectureState.NARRATING)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
         self._body_lecture_start()
 
+    async def _narrate(self, pptx_path: str) -> None:
+        assert self._loop is not None
+        self._slides_broken = False
+
         try:
             await self._loop.run_in_executor(None, self._slides.open, pptx_path)
         except SlideControllerError as e:
-            self._on_fault(str(e))
-            return
+            resolution = await self._handle_slide_fault(str(e))
+            self._slides_broken = resolution == "resume_without_slides"
 
         while self.position < len(self._script.sections):
+            # Not gated by playback (unlike the rest of this loop, which
+            # blocks on _speak()'s idle_event) — a pause landing right here,
+            # or during the section-gap sleep below, used to be silently run
+            # through: PAUSED -> CHECKPOINT/NARRATING was a "valid" table
+            # edge nothing legitimately used, so the loop just kept going
+            # without ever going through resume(). See state.py.
+            assert self._paused_event is not None
+            await self._paused_event.wait()
+
             section = self._script.sections[self.position]
 
-            if section.slide_index != self._last_slide_index:
+            if not self._slides_broken and section.slide_index != self._last_slide_index:
                 try:
                     await self._loop.run_in_executor(None, self._slides.goto, section.slide_index)
+                    self._last_slide_index = section.slide_index
                 except SlideControllerError as e:
-                    self._on_fault(str(e))
-                    return
-                self._last_slide_index = section.slide_index
+                    # _last_slide_index is set to the target *before* the
+                    # fault resolves — it's what "Reopen deck" goes back to
+                    # (§6.4: "issues goto() for the remembered slide").
+                    self._last_slide_index = section.slide_index
+                    resolution = await self._handle_slide_fault(str(e))
+                    self._slides_broken = resolution == "resume_without_slides"
 
+            self.current_section_text = section.text
             await self._speak(section.text)
 
             is_last_section = self.position + 1 >= len(self._script.sections)
@@ -154,17 +292,35 @@ class Orchestrator:
                 # rather than just another inter-sentence gap.
                 await asyncio.sleep(cfg.tts.section_gap_ms / 1000)
 
+            assert self._paused_event is not None
+            await self._paused_event.wait()
+
             if section.checkpoint:
                 self.state.transition(LectureState.CHECKPOINT)
                 self._set_body_state(LectureState.CHECKPOINT)
                 if not self._queue.is_empty():
-                    await self._drain_queue(section)  # always ends back in NARRATING
-                    if is_last_section:
-                        self.state.transition(LectureState.FINISHED)
-                        self._set_body_state(LectureState.FINISHED)
-                        self._body_lecture_end()
-                        self.position += 1
-                        return
+                    # §11 — Ollama unreachable means Q&A is disabled and the
+                    # queue stays frozen (nothing drained, nothing dropped)
+                    # rather than silently producing an empty, falsely-
+                    # "grounded" answer, which is what happened before: a
+                    # dead connection made llm.answer() yield zero chunks
+                    # with no error surfaced anywhere. Narration is
+                    # unaffected either way — it needs no LLM.
+                    llm_ok = await self._loop.run_in_executor(None, llm.is_reachable)
+                    self.qa_disabled = not llm_ok
+                    if llm_ok:
+                        await self._drain_queue(section)  # always ends back in NARRATING
+                        if is_last_section:
+                            self.state.transition(LectureState.FINISHED)
+                            self._set_body_state(LectureState.FINISHED)
+                            self._body_lecture_end()
+                            self.position += 1
+                            return
+                    else:
+                        await self._notify_all({"type": "qa_unavailable"})
+                        if not is_last_section:
+                            self.state.transition(LectureState.NARRATING)
+                            self._set_body_state(LectureState.NARRATING)
                 elif not is_last_section:
                     self.state.transition(LectureState.NARRATING)
                     self._set_body_state(LectureState.NARRATING)
@@ -176,6 +332,66 @@ class Orchestrator:
         self.state.transition(LectureState.FINISHED)
         self._set_body_state(LectureState.FINISHED)
         self._body_lecture_end()
+
+    async def _handle_slide_fault(self, message: str) -> str:
+        """A COM fault from either open() or goto() (§6.4) — the orchestrator
+        genuinely holds here, in PAUSED, until the operator resolves it via
+        reopen_deck() or resume_without_slides() (end_lecture() instead
+        cancels run() outright, which unwinds this await like any other).
+        Returns the resolution string; the caller decides what to do with
+        "resume_without_slides" (skip further slide control), while
+        "reopen" is fully handled here — the deck is reopened and re-goto()'d
+        to the remembered slide before this returns, so callers never retry
+        the failed call themselves."""
+        self._on_fault(message)
+        await self._notify_all({"type": "fault", "message": message})
+
+        assert self._loop is not None
+        self._fault_future = self._loop.create_future()
+        try:
+            resolution = await self._fault_future
+        finally:
+            self._fault_future = None
+
+        if resolution == "reopen":
+            try:
+                await self._loop.run_in_executor(None, self._slides.open, self._pptx_path)
+                if self._last_slide_index is not None:
+                    await self._loop.run_in_executor(None, self._slides.goto, self._last_slide_index)
+            except SlideControllerError as e:
+                # Reopening itself failed — hold again with a fresh fault,
+                # same three options, rather than pretending it succeeded.
+                return await self._handle_slide_fault(str(e))
+
+        self.fault_message = None
+        self.state.resume_from_pause()
+        self._playback.resume()
+        self._set_body_state(self.state.state)
+        if self._paused_event is not None:
+            self._paused_event.set()
+        await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
+        return resolution
+
+    async def _end_lecture_shutdown(self) -> None:
+        """Runs once, from run()'s CancelledError handler, when the operator
+        calls end_lecture() (§10.2) mid-run. The normal FINISHED completion
+        path already does its own equivalent teardown inline and never
+        raises CancelledError, so this never double-runs against it."""
+        assert self._loop is not None
+        self._playback.stop_now()
+        if self._scheduler is not None:
+            self._scheduler.stop()
+        if self._body is not None:
+            self._body.stiffness(False)
+        try:
+            await self._loop.run_in_executor(None, self._slides.close)
+        except SlideControllerError:
+            pass
+        for entry in self._queue.clear():
+            await self._notify(entry.student.student_id, {"type": "queue_cleared"})
+        self.state.force_idle()
+        self._set_body_state(LectureState.IDLE)
+        await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
 
     async def _speak(self, text: str) -> None:
         assert self._loop is not None and self._idle_event is not None
@@ -241,6 +457,8 @@ class Orchestrator:
         self._playback.stop_after_current()
         self.state.transition(LectureState.PAUSED)
         self._set_body_state(LectureState.PAUSED)
+        if self._paused_event is not None:
+            self._paused_event.clear()
         self.fault_message = message
         print(f"[FAULT] {message}")  # operator console alert lands in Phase 5
 
@@ -271,37 +489,63 @@ class Orchestrator:
     async def _drain_queue(self, section: Section) -> None:
         self.state.transition(LectureState.ANSWERING)
         self._set_body_state(LectureState.ANSWERING)
+        self.qa_disabled = False  # reaching here means llm.is_reachable() just confirmed OK
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
+        await self._notify_all({"type": "qa_available"})
         await self._say(self._filler_bank.qa_start_text)
 
         while not self._queue.is_empty():
+            # Same class of gap as _narrate()'s guards — between two turns
+            # there's no playback in flight yet, so a pause landing exactly
+            # here needs an explicit check too.
+            assert self._paused_event is not None
+            await self._paused_event.wait()
+
             entry = self._queue.pop_next()
             await self._broadcast_queue_positions()
             await self._run_turn(entry, section)
 
+        self.current_question = None
+        self.current_answer = None
         await self._say(self._filler_bank.qa_end_text)
         self.state.transition(LectureState.NARRATING)
         self._set_body_state(LectureState.NARRATING)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
 
     async def _run_turn(self, entry: QueueEntry, section: Section) -> None:
+        assert self._skip_event is not None
         student = entry.student
         history: list[dict] = []
         follow_up_depth = 0
+        self.current_question = None
+        self.current_answer = None
 
         prompted = await self._prompt_and_await_question(student.student_id)
         if prompted is None:
             return  # abandoned (force_skip) before ever asking anything
         question, input_mode = prompted
+        self.current_question = question
 
         while True:
             self._turn_id += 1
-            answer_text, grounded = await self._answer_question(question, history, section)
+            self._skip_event.clear()
+            answer_text, grounded, was_skipped = await self._answer_question(question, history, section)
+
+            if was_skipped:
+                # Operator Skip question (§10.2) — move to the next student;
+                # there's no completed answer to offer Reply/Done on.
+                self._record_transcript(
+                    section, student, question, answer_text, grounded, "skipped", follow_up_depth, input_mode
+                )
+                break
+
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": answer_text})
 
             allow_reply = (follow_up_depth + 1) < cfg.llm.followup_turn_cap
-            resolution, next_question, next_mode = await self._offer_reply(student.student_id, allow_reply)
+            resolution, next_question, next_mode = await self._offer_reply(
+                student.student_id, allow_reply, answer_text
+            )
 
             self._record_transcript(
                 section, student, question, answer_text, grounded, resolution, follow_up_depth, input_mode
@@ -310,17 +554,25 @@ class Orchestrator:
             if resolution != "replied":
                 break
             question = next_question
+            self.current_question = question
             input_mode = next_mode
             follow_up_depth += 1
 
     async def _answer_question(
         self, question: str, history: list[dict], section: Section
-    ) -> tuple[str, bool]:
-        assert self._loop is not None
+    ) -> tuple[str, bool, bool]:
+        """Returns (answer_text, grounded, was_skipped)."""
+        assert self._loop is not None and self._skip_event is not None
+        # Captured once: skip_question() may bump self._turn_id from outside
+        # partway through this call (to invalidate anything *else* queued
+        # after this point) — every enqueue and the final wait below must
+        # stay pinned to the turn this call actually started, not whatever
+        # self._turn_id has become by the time it returns.
+        my_turn_id = self._turn_id
         seq = 0
 
         filler_wav = self._filler_bank.next_stage1()
-        self._playback.enqueue(Utterance(turn_id=self._turn_id, seq=seq, wav_path=filler_wav, kind="filler"))
+        self._playback.enqueue(Utterance(turn_id=my_turn_id, seq=seq, wav_path=filler_wav, kind="filler"))
         seq += 1
 
         # Checked before stage-2, which would otherwise speak the question
@@ -332,7 +584,7 @@ class Orchestrator:
             stage2_text = self._filler_bank.stage2(question)
             stage2_wav = await self._loop.run_in_executor(None, tts.synthesize, stage2_text)
             self._playback.enqueue(
-                Utterance(turn_id=self._turn_id, seq=seq, wav_path=stage2_wav, kind="filler")
+                Utterance(turn_id=my_turn_id, seq=seq, wav_path=stage2_wav, kind="filler")
             )
             seq += 1
 
@@ -341,7 +593,7 @@ class Orchestrator:
             # scripted decline, not a repeat and not a model-generated reply.
             answer_text = self._filler_bank.decline_text
             wav_path = await self._loop.run_in_executor(None, tts.synthesize, answer_text)
-            self._playback.enqueue(Utterance(turn_id=self._turn_id, seq=seq, wav_path=wav_path, kind="answer"))
+            self._playback.enqueue(Utterance(turn_id=my_turn_id, seq=seq, wav_path=wav_path, kind="answer"))
             seq += 1
             grounded = True
         else:
@@ -350,28 +602,53 @@ class Orchestrator:
             async for sentence in sentences.split_stream_async(
                 llm.answer(question, history, self._script.full_narration, position)
             ):
+                if self._skip_event.is_set():
+                    break  # operator Skip question — stop feeding the queue, unwind below
                 answer_chunks.append(sentence)
                 wav_path = await self._loop.run_in_executor(None, tts.synthesize, sentence)
-                self._playback.enqueue(Utterance(turn_id=self._turn_id, seq=seq, wav_path=wav_path, kind="answer"))
+                self._playback.enqueue(Utterance(turn_id=my_turn_id, seq=seq, wav_path=wav_path, kind="answer"))
                 seq += 1
 
             answer_text = " ".join(answer_chunks)
             lowered = answer_text.lower()
             grounded = "isn't covered" not in lowered and "not covered" not in lowered
 
+        self.current_answer = answer_text
+
+        if self._skip_event.is_set():
+            return answer_text, grounded, True
+
         # Wait for the specific last utterance we enqueued to actually
         # finish playing — not PlaybackQueue.on_idle, which can fire while
-        # this coroutine is still producing more (see _wait_until_played).
-        await self._wait_until_played(self._turn_id, seq - 1)
-        return answer_text, grounded
+        # this coroutine is still producing more (see _wait_until_played) —
+        # but race it against a skip landing in the instant right after the
+        # check above: stop_now() drops anything still queued without ever
+        # firing on_utterance_end for the dropped items, so waiting
+        # unconditionally on `seq - 1` here could otherwise hang forever.
+        wait_task = asyncio.ensure_future(self._wait_until_played(my_turn_id, seq - 1))
+        skip_task = asyncio.ensure_future(self._skip_event.wait())
+        done, pending = await asyncio.wait({wait_task, skip_task}, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        return answer_text, grounded, skip_task in done
 
-    async def _offer_reply(self, student_id: str, allow_reply: bool) -> tuple[str, str | None, str | None]:
+    async def _offer_reply(
+        self, student_id: str, allow_reply: bool, answer_text: str
+    ) -> tuple[str, str | None, str | None]:
         if not allow_reply:
-            await self._notify(student_id, {"type": "answered", "reply_allowed": False})
+            await self._notify(student_id, {"type": "answered", "answer": answer_text, "reply_allowed": False})
             await self._notify(student_id, {"type": "turn_ended"})
             return "done", None, None
 
-        await self._notify(student_id, {"type": "answered", "reply_allowed": True, "window_s": cfg.timings.reply_window_s})
+        await self._notify(
+            student_id,
+            {
+                "type": "answered",
+                "answer": answer_text,
+                "reply_allowed": True,
+                "window_s": cfg.timings.reply_window_s,
+            },
+        )
         choice = await self._await_choice(student_id, cfg.timings.reply_window_s)
         if choice != "reply":
             # The 5 s/30 s windows are enforced here, server-side — the
@@ -406,6 +683,8 @@ class Orchestrator:
         follow_up_depth: int,
         input_mode: str,
     ) -> None:
+        if follow_up_depth == 0:
+            self.questions_answered += 1
         entry = TranscriptEntry(
             timestamp=datetime.now(),
             slide_index=section.slide_index,
@@ -418,6 +697,7 @@ class Orchestrator:
             resolution=resolution,
             follow_up_depth=follow_up_depth,
         )
+        assert self._transcript is not None  # _wait_for_start() creates it before any turn can run
         self._transcript.record(entry)
 
     # ---- cross-request rendezvous ------------------------------------
@@ -466,6 +746,48 @@ class Orchestrator:
             self._awaiting_student = None
             self._awaiting_future = None
 
+    # ---- operator console (§10.1) --------------------------------------
+
+    @property
+    def transcript(self) -> Transcript | None:
+        """The current lecture's transcript (§10.1 download link) — None
+        only in the brief window before the very first Start of the
+        process. A fresh one replaces it each time _wait_for_start()
+        actually begins a new lecture."""
+        return self._transcript
+
+    def snapshot(self) -> dict:
+        """Everything the operator console's display needs in one shot —
+        a plain REST poll (§10.1 doesn't require a push channel of its own,
+        and the existing student WebSocket is keyed by student_id, not
+        worth repurposing for a single console client)."""
+        section = None
+        if 0 <= self.position < len(self._script.sections):
+            section = self._script.sections[self.position]
+        return {
+            "state": self.state.state.name,
+            "slide_index": section.slide_index if section is not None else None,
+            # section.index, not section.section_index — the latter resets
+            # to 0 at the start of every slide (it's "the Nth section of
+            # *this* slide", used by _position_marker() for the LLM). Using
+            # it here against a deck-wide total_sections made the console's
+            # counter jump backward at every slide boundary. section.index
+            # is the deck-wide position that's actually comparable to
+            # total_sections — and it's already equal to self.position by
+            # construction, so this and slide_index now advance in lockstep.
+            "section_index": (section.index + 1) if section is not None else None,
+            "total_sections": len(self._script.sections),
+            "total_slides": self._script.slide_count,
+            "current_section_text": self.current_section_text,
+            "fault_message": self.fault_message,
+            "fault_pending": self._fault_future is not None,
+            "qa_disabled": self.qa_disabled,
+            "current_question": self.current_question,
+            "current_answer": self.current_answer,
+            "questions_answered": self.questions_answered,
+            "queue": self._queue.list_entries(),
+        }
+
     # ---- called by web routes, on the event loop thread (§4.3) --------
 
     def start(self) -> bool:
@@ -474,6 +796,149 @@ class Orchestrator:
             return False
         self._start_event.set()
         return True
+
+    def pause(self) -> bool:
+        """Operator Pause (§10.2) — distinct from a slide fault: fault_message
+        stays None, so resume() (not reopen_deck()/resume_without_slides())
+        is the correct way back. stop_after_current() leaves everything
+        already queued untouched, so resume() picks up exactly where it
+        left off with no re-synthesis or re-goto needed."""
+        if self.state.state not in (LectureState.NARRATING, LectureState.CHECKPOINT, LectureState.ANSWERING):
+            return False
+        self._playback.stop_after_current()
+        self.state.transition(LectureState.PAUSED)
+        self._set_body_state(LectureState.PAUSED)
+        if self._paused_event is not None:
+            self._paused_event.clear()
+        self._notify_all_soon({"type": "lecture_status", "state": self.state.state.name})
+        return True
+
+    def resume(self) -> bool:
+        if self.state.state != LectureState.PAUSED or self.fault_message is not None:
+            return False
+        self.state.resume_from_pause()
+        self._playback.resume()
+        self._set_body_state(self.state.state)
+        if self._paused_event is not None:
+            self._paused_event.set()
+        self._notify_all_soon({"type": "lecture_status", "state": self.state.state.name})
+        return True
+
+    def skip_section(self) -> bool:
+        """Operator Skip section (§10.2) — abandons whatever's left of the
+        current section and advances. Also clears the queue: the questions
+        in it were about material that's now being skipped (§10.2).
+        Restricted to NARRATING/CHECKPOINT — mid Q&A (ANSWERING), use Skip
+        question first; abandoning a section while a specific student is
+        actively being answered has no single sensible meaning.
+
+        Relies on PlaybackQueue's own mechanics rather than touching the
+        main narration loop directly: flush+stop_now empties both of its
+        internal queues, which fires on_idle, which is exactly what
+        _speak() is awaiting — the loop then falls through to the
+        checkpoint/advance logic on its own, with the queue already empty."""
+        if self.state.state not in (LectureState.NARRATING, LectureState.CHECKPOINT):
+            return False
+        self._turn_id += 1
+        self._playback.flush(self._turn_id)
+        self._playback.stop_now()
+        self._clear_queue_and_notify()
+        return True
+
+    def skip_question(self) -> bool:
+        """Operator Skip question (§10.2) — abandons the active turn and
+        moves to the next student. Two cases: we're waiting on the student
+        themselves (their turn to submit, or the Reply/Done/compose
+        windows) — force_skip() already resolves that as an abandonment.
+        Or an answer is actively being generated/played — cut the LLM
+        stream and the audio, and let _answer_question's own skip-awareness
+        unwind cleanly (see there) rather than reaching into _run_turn from
+        the outside."""
+        if self.state.state != LectureState.ANSWERING:
+            return False
+        if self._awaiting_future is not None and not self._awaiting_future.done():
+            return self.force_skip()
+        if self._skip_event is None:
+            return False
+        self._turn_id += 1
+        self._playback.flush(self._turn_id)
+        self._playback.stop_now()
+        llm.cancel()
+        self._skip_event.set()
+        return True
+
+    def clear_queue(self) -> bool:
+        """Operator Clear queue (§10.2) — drops all *waiting* students, who
+        are notified. The active turn (already popped off the queue)
+        completes normally; use Skip question to end that one instead."""
+        if self._queue.is_empty():
+            return False
+        self._clear_queue_and_notify()
+        return True
+
+    def _clear_queue_and_notify(self) -> None:
+        for entry in self._queue.clear():
+            if self._loop is not None:
+                self._loop.create_task(self._notify(entry.student.student_id, {"type": "queue_cleared"}))
+
+    def reopen_deck(self) -> bool:
+        """Operator's first option after a slide fault (§6.4) — reopens
+        lecture.pptx and re-goto()'s the remembered slide. False if no
+        fault is currently being held."""
+        return self._resolve_fault("reopen")
+
+    def resume_without_slides(self) -> bool:
+        """Operator's second option after a slide fault (§6.4) — narration
+        and Q&A continue; slide control simply stops being attempted until
+        a later reopen_deck() succeeds. False if no fault is currently held."""
+        return self._resolve_fault("resume_without_slides")
+
+    def _resolve_fault(self, resolution: str) -> bool:
+        if self._fault_future is None or self._fault_future.done():
+            return False
+        self._fault_future.set_result(resolution)
+        return True
+
+    def end_lecture(self) -> bool:
+        """Operator End lecture (§10.2) — works from any active state.
+        Cancels run()'s own task, which unblocks whichever await it's
+        currently sitting on (see run()'s CancelledError handler for why
+        this is simpler than threading a checked flag through every await
+        site individually). llm.cancel() is a best-effort head start on the
+        one case — an in-flight LLM stream — that cancellation alone
+        wouldn't interrupt promptly, since it's driven from a blocking
+        executor call that only notices cancellation between chunks."""
+        if self._own_task is None or self.state.state in (LectureState.IDLE, LectureState.FINISHED):
+            return False
+        llm.cancel()
+        self._own_task.cancel()
+        return True
+
+    def request_exit(self) -> bool:
+        """Operator Exit (§10.2 update, 2026-08-03) — closes the whole
+        application, not just the current lecture. Shares End lecture's
+        cancellation mechanism (same teardown: audio stopped, PowerPoint
+        closed, queue cleared) but sets _exit_requested first so run()'s
+        CancelledError handler breaks out of its loop instead of re-arming
+        for another Start; run() then genuinely returns, which lets
+        main.py's existing shutdown path stop the web server and exit the
+        process. Unlike end_lecture(), this works from *any* state
+        including IDLE/READY — run() is always blocked somewhere (waiting
+        for Start, narrating, or paused) once it has started, so there's
+        always something to cancel."""
+        if self._own_task is None:
+            return False
+        self._exit_requested = True
+        llm.cancel()
+        self._own_task.cancel()
+        return True
+
+    def _notify_all_soon(self, message: dict) -> None:
+        """Fire-and-forget broadcast from a synchronous operator method
+        (called directly from a route handler on the event loop thread,
+        same pattern as force_skip()'s own notifications)."""
+        if self._loop is not None:
+            self._loop.create_task(self._notify_all(message))
 
     def submit_question(self, student_id: str, text: str, mode: str = "typed") -> bool:
         return self._resolve("question", student_id, {"text": text, "mode": mode})

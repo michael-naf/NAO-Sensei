@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -49,34 +49,29 @@ def create_app(orchestrator: Orchestrator, queue: QuestionQueue, connections: Co
     app.state.orchestrator = orchestrator
     app.state.queue = queue
     app.state.connections = connections
+    # Transcript is *not* stored here — it's the orchestrator's own
+    # (orchestrator.transcript), recreated fresh each time a new lecture
+    # starts. A separate reference here would go stale after a restart.
+    app.state.join_url = None  # set by main.py once _setup_public_url() resolves (Mode B only)
 
+    from app.web.routes_operator import require_operator_token
+    from app.web.routes_operator import router as operator_router
     from app.web.routes_student import router as student_router  # deferred: avoids import cycle at module load
 
     app.include_router(student_router)
+    app.include_router(operator_router)
 
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(_STATIC_DIR / "student.html")
 
-    @app.post("/api/start")
-    async def start_lecture() -> dict:
-        # Bare minimum stand-in for the Phase 5 operator console's Start
-        # control (§10.2) — no token guard, no UI, none of the other six
-        # controls. Just the one piece of §6.1's READY -> NARRATING wiring
-        # needed to test with students already connected.
-        if not orchestrator.start():
-            raise HTTPException(status_code=409, detail="Not currently READY.")
-        return {"ok": True}
-
-    @app.post("/api/force_skip")
-    async def force_skip() -> dict:
-        # Same category as /api/start above — a minimal stand-in for one
-        # Phase 5 operator control ("Skip question", §10.2), added because
-        # a turn stuck waiting on a student who's gone (closed browser,
-        # disconnected) currently has no other way to unblock.
-        if not orchestrator.force_skip():
-            raise HTTPException(status_code=409, detail="Nothing is currently pending.")
-        return {"ok": True}
+    @app.get("/operator", dependencies=[Depends(require_operator_token)])
+    async def operator_page() -> FileResponse:
+        # §10.3 — a separate path guarded by the config-file token; the
+        # /api/operator/* routes carry the same guard independently, so a
+        # student who guesses this URL still can't issue any control even
+        # if they somehow load the page shell itself.
+        return FileResponse(_STATIC_DIR / "operator.html")
 
     @app.websocket("/ws/{student_id}")
     async def ws_endpoint(websocket: WebSocket, student_id: str) -> None:

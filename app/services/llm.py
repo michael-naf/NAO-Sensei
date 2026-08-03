@@ -76,6 +76,19 @@ def cancel() -> None:
     _cancel_event.set()
 
 
+def is_reachable() -> bool:
+    """Cheap liveness probe for the operator console's health row (§10.1)
+    and the §11 'Ollama unreachable' failure path — no generation, just
+    confirms the server answers. A short timeout of its own: this must never
+    block the event loop thread for as long as _client's normal 120s chat
+    timeout would."""
+    try:
+        resp = _client.get("/api/tags", timeout=httpx.Timeout(2.0, connect=1.0))
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 async def answer(question: str, history: list[dict], narration: str, position: str) -> AsyncIterator[str]:
     """Streams raw text chunks from the model as they arrive. The blocking
     HTTP stream runs in an executor thread; chunks cross back to the event

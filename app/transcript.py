@@ -18,7 +18,7 @@ class TranscriptEntry:
     question_text: str
     answer_text: str
     grounded: bool
-    resolution: str  # 'done' | 'replied' | 'timeout'
+    resolution: str  # 'done' | 'replied' | 'timeout' | 'skipped' (operator Skip question, §10.2)
     follow_up_depth: int = 0  # 0 for the initial question, incrementing for replies
 
 
@@ -82,6 +82,8 @@ class Transcript:
         lines.append(f"{entry.answer_text}\n")
         if entry.resolution == "timeout":
             lines.append("\n*(auto-resolved after timeout)*\n")
+        elif entry.resolution == "skipped":
+            lines.append("\n*(skipped by the operator)*\n")
 
         with self._path.open("a", encoding="utf-8") as f:
             f.writelines(lines)

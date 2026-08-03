@@ -32,7 +32,17 @@ _VALID_TRANSITIONS: dict[LectureState, set[LectureState]] = {
         LectureState.PAUSED,
     },
     LectureState.ANSWERING: {LectureState.NARRATING, LectureState.PAUSED},
-    LectureState.PAUSED: {LectureState.NARRATING, LectureState.CHECKPOINT, LectureState.ANSWERING},
+    # Empty, not {NARRATING, CHECKPOINT, ANSWERING}: the only legitimate way
+    # out of PAUSED is resume_from_pause() (uses _paused_from, bypasses this
+    # table on purpose) or force_idle() (also bypasses it, for End lecture).
+    # Those three targets used to sit here as leftover "resume" edges, but
+    # nothing ever consumed them through transition() *deliberately* — they
+    # only let a stray transition() call from elsewhere (e.g. _narrate()
+    # walking forward through a checkpoint) succeed silently while actually
+    # PAUSED, overwriting the pause without ever resuming playback. Found
+    # live: pausing during the inter-section gap let the lecture "jump out
+    # of pause" on its own. Now any such stray call raises loudly instead.
+    LectureState.PAUSED: set(),
     LectureState.FINISHED: {LectureState.IDLE},
 }
 
@@ -58,4 +68,15 @@ class LectureStateMachine:
             raise InvalidTransition("resume_from_pause() called while not PAUSED")
         assert self._paused_from is not None
         self.state = self._paused_from
+        self._paused_from = None
+
+    def force_idle(self) -> None:
+        """Operator 'End lecture' (§10.2) must work from any active state,
+        not just the single FINISHED -> IDLE edge §6.1's table names — there
+        is no re-arm flow in this MVP (one process, one run() call), so this
+        is a hard reset for shutdown, not a modeled transition. Deliberately
+        bypasses _VALID_TRANSITIONS rather than adding an IDLE edge to every
+        row, which would make the graph claim states can resume normally
+        into IDLE when they can't."""
+        self.state = LectureState.IDLE
         self._paused_from = None

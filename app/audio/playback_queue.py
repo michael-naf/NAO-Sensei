@@ -104,6 +104,17 @@ class PlaybackQueue:
             with self._turn_lock:
                 stale = u.turn_id < self._valid_turn_id
             if stale:
+                # Still must go through _finish(), not a bare discard: an
+                # item can land here *after* flush() already ran (it was
+                # already out of `_pending`, mid-prepare, when the flush
+                # drained the snapshot — see flush()'s own docstring). If
+                # this happens to be the last thing standing between the
+                # queues and empty, skipping _finish() here means the
+                # empty-queue check inside it never runs for anyone —
+                # on_idle/on_utterance_end is lost, and whatever's waiting
+                # on it (_speak(), _wait_until_played()) hangs forever.
+                # Found live: Skip section on a long final section.
+                self._finish(u)
                 continue
 
             self._playing_event.set()
