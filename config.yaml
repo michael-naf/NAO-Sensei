@@ -46,7 +46,9 @@ audio:
   max_sentence_chars: 300
 
 slides:
-  display: 2                # projector monitor index
+  display: 1                # projector monitor index — TEMP: only 1 monitor
+                             # connected right now (2026-08-02), revert to 2
+                             # once the second display is back
   com_timeout_s: 5
 
 timings:
@@ -55,9 +57,17 @@ timings:
   max_recording_s: 30
   max_typed_chars: 500
   question_repeat_max_words: 25
+  disconnect_grace_s: 20    # a student's browser gone (closed/dead) while
+                             # we're waiting on them specifically — how long
+                             # to hold before auto-abandoning their turn.
+                             # Not in specs.md; added after this kept
+                             # happening live and blocking the whole queue.
 
 server:
-  mode: lan                 # lan | tunnel   — §9.1
+  mode: tunnel               # lan | tunnel   — §9.1
+                             # left on "tunnel" from Phase 4 voice testing
+                             # (2026-08-03) — switch back to "lan" for
+                             # typed-only runs where voice isn't needed
   host: 0.0.0.0
   port: 8000
   public_url:                # optional manual override of the tunnel URL

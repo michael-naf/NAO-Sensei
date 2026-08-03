@@ -76,6 +76,7 @@
     <div class="char-count"><span id="turn-count">0</span>/500</div>
     <div class="row">
       <button id="btn-turn-submit">Send</button>
+      <button class="secondary" id="btn-record" style="display:none">🎤 Record</button>
       <span class="countdown" id="turn-countdown"></span>
     </div>
   </div>
@@ -165,6 +166,100 @@
   el("turn-text").addEventListener("input", () => {
     el("turn-count").textContent = el("turn-text").value.length;
   });
+
+  // Mode B only (§9.3) — navigator.mediaDevices is undefined outside a
+  // secure context (plain HTTP to a LAN IP), so this feature-detection IS
+  // the Mode A/B switch: no server coordination needed, and if a tunnel
+  // dies mid-lecture, any *new* page load over the LAN just won't see this.
+  const MAX_RECORDING_S = 30; // mirrors config.yaml timings.max_recording_s
+  const MIME_CANDIDATES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  const voiceAvailable = !!(window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+  let mediaRecorder = null;
+  let mediaStream = null;
+  let recordedChunks = [];
+  let recordingTimer = null;
+  let recordingSeconds = 0;
+
+  if (voiceAvailable) {
+    el("btn-record").style.display = "";
+  }
+
+  function pickMimeType() {
+    for (const type of MIME_CANDIDATES) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
+  }
+
+  function setRecordButton(recording) {
+    const btn = el("btn-record");
+    btn.textContent = recording ? "⏹ Stop" : "🎤 Record";
+  }
+
+  async function startRecording() {
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert("Microphone access denied or unavailable.");
+      return;
+    }
+    const mimeType = pickMimeType();
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = onRecordingStop;
+    mediaRecorder.start();
+    recordingSeconds = 0;
+    setRecordButton(true);
+    recordingTimer = setInterval(() => {
+      recordingSeconds += 1;
+      el("btn-record").textContent = `⏹ Stop (${MAX_RECORDING_S - recordingSeconds}s)`;
+      if (recordingSeconds >= MAX_RECORDING_S) stopRecording();
+    }, 1000);
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+  }
+
+  async function onRecordingStop() {
+    setRecordButton(false);
+    if (recordedChunks.length === 0) return;
+    const mimeType = mediaRecorder.mimeType || "audio/webm";
+    const blob = new Blob(recordedChunks, { type: mimeType });
+
+    const formData = new FormData();
+    formData.append("student_id", studentId);
+    formData.append("mode", turnMode === "initial" ? "question" : "reply");
+    formData.append("audio", blob, "recording");
+
+    try {
+      const res = await fetch("/api/submit_audio", { method: "POST", body: formData });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.detail || ("Request failed: " + res.status));
+      }
+      show("submitted");
+      clearCountdown();
+    } catch (e) {
+      // STT failure holds the student's queue position server-side (§11) —
+      // nothing to undo here, just let them try again.
+      alert(e.message + " — you can try recording again.");
+    }
+  }
+
+  if (voiceAvailable) {
+    el("btn-record").addEventListener("click", () => {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    });
+  }
 
   el("btn-turn-submit").addEventListener("click", async () => {
     const text = el("turn-text").value.trim();

@@ -75,6 +75,7 @@ class TimingsConfig:
     max_recording_s: float
     max_typed_chars: int
     question_repeat_max_words: int
+    disconnect_grace_s: float
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,7 @@ def _load(path: Path) -> Config:
             max_recording_s=_get(timings, "max_recording_s", "timings"),
             max_typed_chars=_get(timings, "max_typed_chars", "timings"),
             question_repeat_max_words=_get(timings, "question_repeat_max_words", "timings"),
+            disconnect_grace_s=_get(timings, "disconnect_grace_s", "timings"),
         ),
         server=ServerConfig(
             mode=_get(server, "mode", "server"),

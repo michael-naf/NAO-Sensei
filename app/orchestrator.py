@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Protocol
 
 from app.audio.playback_queue import PlaybackQueue, Utterance
+from app.body.body import Body
+from app.body.scheduler import Scheduler
 from app.config import cfg
 from app.queue import QueueEntry, QuestionQueue
 from app.script_parser import LectureScript, Section
-from app.services import llm, moderation, sentences, tts
+from app.services import llm, moderation, sentences, stt, tts
 from app.slides import SlideController, SlideControllerError
 from app.state import LectureState, LectureStateMachine
 from app.transcript import Transcript, TranscriptEntry
@@ -21,6 +23,19 @@ class Notifier(Protocol):
 
     async def send(self, student_id: str, message: dict) -> None: ...
     async def broadcast(self, message: dict) -> None: ...
+    def is_connected(self, student_id: str) -> bool: ...
+
+
+# §12.4.3 — eye LED pattern per orchestrator state.
+_LED_PATTERNS: dict[LectureState, str] = {
+    LectureState.IDLE: "off",
+    LectureState.READY: "off",
+    LectureState.NARRATING: "white",
+    LectureState.CHECKPOINT: "green",
+    LectureState.ANSWERING: "blue",
+    LectureState.PAUSED: "yellow",
+    LectureState.FINISHED: "off",
+}
 
 
 class Orchestrator:
@@ -35,6 +50,8 @@ class Orchestrator:
         queue: QuestionQueue,
         transcript: Transcript,
         notifier: Notifier | None = None,
+        body: Body | None = None,
+        scheduler: Scheduler | None = None,
     ) -> None:
         self._script = script
         self._slides = slides
@@ -42,6 +59,8 @@ class Orchestrator:
         self._queue = queue
         self._transcript = transcript
         self._notifier = notifier
+        self._body = body
+        self._scheduler = scheduler
         self._filler_bank = _FillerBank()
         self.state = LectureStateMachine()
         self.position = 0  # index into script.sections — the source of truth
@@ -85,11 +104,16 @@ class Orchestrator:
         self._playback.on_utterance_end = self._handle_utterance_end
 
         # §6.1: IDLE -> READY happens "on successful load + model warm-up".
+        # All three models (Piper, Whisper, Ollama) are warmed unconditionally
+        # — Mode A/B can differ at runtime without an app restart (§9.1), so
+        # STT must already be resident whenever voice first gets used.
         await self._loop.run_in_executor(None, tts.warm)
         await self._loop.run_in_executor(None, llm.warm)
+        await self._loop.run_in_executor(None, stt.warm)
         await self._filler_bank.warm(self._loop)
 
         self.state.transition(LectureState.READY)
+        self._set_body_state(LectureState.READY)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
 
         # READY is "not started" until an operator start (§6.1) — students
@@ -100,7 +124,9 @@ class Orchestrator:
         await self._start_event.wait()
 
         self.state.transition(LectureState.NARRATING)
+        self._set_body_state(LectureState.NARRATING)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
+        self._body_lecture_start()
 
         try:
             await self._loop.run_in_executor(None, self._slides.open, pptx_path)
@@ -130,20 +156,26 @@ class Orchestrator:
 
             if section.checkpoint:
                 self.state.transition(LectureState.CHECKPOINT)
+                self._set_body_state(LectureState.CHECKPOINT)
                 if not self._queue.is_empty():
                     await self._drain_queue(section)  # always ends back in NARRATING
                     if is_last_section:
                         self.state.transition(LectureState.FINISHED)
+                        self._set_body_state(LectureState.FINISHED)
+                        self._body_lecture_end()
                         self.position += 1
                         return
                 elif not is_last_section:
                     self.state.transition(LectureState.NARRATING)
+                    self._set_body_state(LectureState.NARRATING)
                 # else: last section, empty queue — stay in CHECKPOINT; the
                 # loop ends below and FINISHED is entered from there.
 
             self.position += 1
 
         self.state.transition(LectureState.FINISHED)
+        self._set_body_state(LectureState.FINISHED)
+        self._body_lecture_end()
 
     async def _speak(self, text: str) -> None:
         assert self._loop is not None and self._idle_event is not None
@@ -208,13 +240,37 @@ class Orchestrator:
     def _on_fault(self, message: str) -> None:
         self._playback.stop_after_current()
         self.state.transition(LectureState.PAUSED)
+        self._set_body_state(LectureState.PAUSED)
         self.fault_message = message
         print(f"[FAULT] {message}")  # operator console alert lands in Phase 5
+
+    def _set_body_state(self, state: LectureState) -> None:
+        if self._body is None:
+            return
+        self._body.leds(_LED_PATTERNS.get(state, "off"))
+        if state in (LectureState.CHECKPOINT, LectureState.PAUSED):
+            # §12.4.2 — no utterance is playing in these states, so nothing
+            # drives gaze via the scheduler's on_utterance_start hook.
+            self._body.gaze("class")
+
+    def _body_lecture_start(self) -> None:
+        if self._body is not None:
+            self._body.posture("Sit")
+            self._body.stiffness(True)
+        if self._scheduler is not None:
+            self._scheduler.start()
+
+    def _body_lecture_end(self) -> None:
+        if self._scheduler is not None:
+            self._scheduler.stop()
+        if self._body is not None:
+            self._body.stiffness(False)
 
     # ---- Q&A (§6.3, §7) ---------------------------------------------
 
     async def _drain_queue(self, section: Section) -> None:
         self.state.transition(LectureState.ANSWERING)
+        self._set_body_state(LectureState.ANSWERING)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
         await self._say(self._filler_bank.qa_start_text)
 
@@ -225,6 +281,7 @@ class Orchestrator:
 
         await self._say(self._filler_bank.qa_end_text)
         self.state.transition(LectureState.NARRATING)
+        self._set_body_state(LectureState.NARRATING)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
 
     async def _run_turn(self, entry: QueueEntry, section: Section) -> None:
@@ -232,7 +289,10 @@ class Orchestrator:
         history: list[dict] = []
         follow_up_depth = 0
 
-        question = await self._prompt_and_await_question(student.student_id)
+        prompted = await self._prompt_and_await_question(student.student_id)
+        if prompted is None:
+            return  # abandoned (force_skip) before ever asking anything
+        question, input_mode = prompted
 
         while True:
             self._turn_id += 1
@@ -241,15 +301,16 @@ class Orchestrator:
             history.append({"role": "assistant", "content": answer_text})
 
             allow_reply = (follow_up_depth + 1) < cfg.llm.followup_turn_cap
-            resolution, next_question = await self._offer_reply(student.student_id, allow_reply)
+            resolution, next_question, next_mode = await self._offer_reply(student.student_id, allow_reply)
 
             self._record_transcript(
-                section, student, question, answer_text, grounded, resolution, follow_up_depth
+                section, student, question, answer_text, grounded, resolution, follow_up_depth, input_mode
             )
 
             if resolution != "replied":
                 break
             question = next_question
+            input_mode = next_mode
             follow_up_depth += 1
 
     async def _answer_question(
@@ -304,11 +365,11 @@ class Orchestrator:
         await self._wait_until_played(self._turn_id, seq - 1)
         return answer_text, grounded
 
-    async def _offer_reply(self, student_id: str, allow_reply: bool) -> tuple[str, str | None]:
+    async def _offer_reply(self, student_id: str, allow_reply: bool) -> tuple[str, str | None, str | None]:
         if not allow_reply:
             await self._notify(student_id, {"type": "answered", "reply_allowed": False})
             await self._notify(student_id, {"type": "turn_ended"})
-            return "done", None
+            return "done", None, None
 
         await self._notify(student_id, {"type": "answered", "reply_allowed": True, "window_s": cfg.timings.reply_window_s})
         choice = await self._await_choice(student_id, cfg.timings.reply_window_s)
@@ -318,14 +379,15 @@ class Orchestrator:
             # needs an explicit push once the window closes, or it's left
             # showing Reply/Done (or a reply box) with no way out.
             await self._notify(student_id, {"type": "turn_ended"})
-            return ("timeout" if choice is None else "done"), None
+            return ("timeout" if choice is None else "done"), None, None
 
         await self._notify(student_id, {"type": "reply_window", "window_s": cfg.timings.compose_window_s})
-        reply_text = await self._await_reply_text(student_id, cfg.timings.compose_window_s)
-        if reply_text is None:
+        reply = await self._await_reply_text(student_id, cfg.timings.compose_window_s)
+        if reply is None:
             await self._notify(student_id, {"type": "turn_ended"})
-            return "timeout", None
-        return "replied", reply_text
+            return "timeout", None, None
+        reply_text, reply_mode = reply
+        return "replied", reply_text, reply_mode
 
     def _position_marker(self, section: Section) -> str:
         return (
@@ -342,13 +404,14 @@ class Orchestrator:
         grounded: bool,
         resolution: str,
         follow_up_depth: int,
+        input_mode: str,
     ) -> None:
         entry = TranscriptEntry(
             timestamp=datetime.now(),
             slide_index=section.slide_index,
             section_index=section.section_index + 1,
             student_label=student.label,
-            input_mode="typed",
+            input_mode=input_mode,
             question_text=question,
             answer_text=answer_text,
             grounded=grounded,
@@ -359,11 +422,19 @@ class Orchestrator:
 
     # ---- cross-request rendezvous ------------------------------------
 
-    async def _prompt_and_await_question(self, student_id: str) -> str:
+    async def _prompt_and_await_question(self, student_id: str) -> tuple[str, str] | None:
         await self._notify(student_id, {"type": "your_turn"})
+        if self._loop is not None and self._notifier is not None and not self._notifier.is_connected(student_id):
+            # Already gone before their turn even started (left minutes
+            # ago) — no fresh disconnect event will ever fire for this one,
+            # so start the same grace timer directly instead of waiting on
+            # notify_disconnect().
+            self._loop.create_task(self._disconnect_grace_timer(student_id))
         result = await self._await("question", student_id)
+        if result is None:
+            return None  # force_skip() abandoned this turn
         await self._notify(student_id, {"type": "submitted"})
-        return result["text"]
+        return result["text"], result.get("mode", "typed")
 
     async def _await_choice(self, student_id: str, timeout: float) -> str | None:
         try:
@@ -371,12 +442,14 @@ class Orchestrator:
         except asyncio.TimeoutError:
             return None
 
-    async def _await_reply_text(self, student_id: str, timeout: float) -> str | None:
+    async def _await_reply_text(self, student_id: str, timeout: float) -> tuple[str, str] | None:
         try:
             result = await self._await("reply", student_id, timeout=timeout)
-            return result["text"]
         except asyncio.TimeoutError:
             return None
+        if result is None:  # force_skip() abandoned this reply
+            return None
+        return result["text"], result.get("mode", "typed")
 
     async def _await(self, kind: str, student_id: str, timeout: float | None = None):
         assert self._loop is not None
@@ -402,8 +475,8 @@ class Orchestrator:
         self._start_event.set()
         return True
 
-    def submit_question(self, student_id: str, text: str) -> bool:
-        return self._resolve("question", student_id, {"text": text})
+    def submit_question(self, student_id: str, text: str, mode: str = "typed") -> bool:
+        return self._resolve("question", student_id, {"text": text, "mode": mode})
 
     def choose_reply(self, student_id: str) -> bool:
         return self._resolve("choice", student_id, "reply")
@@ -411,8 +484,50 @@ class Orchestrator:
     def choose_done(self, student_id: str) -> bool:
         return self._resolve("choice", student_id, "done")
 
-    def submit_reply_text(self, student_id: str, text: str) -> bool:
-        return self._resolve("reply", student_id, {"text": text})
+    def submit_reply_text(self, student_id: str, text: str, mode: str = "typed") -> bool:
+        return self._resolve("reply", student_id, {"text": text, "mode": mode})
+
+    def force_skip(self) -> bool:
+        """Emergency unblock for a turn stuck waiting on a student who's
+        gone (closed browser, disconnected) — resolves whatever is
+        currently pending as an abandonment. Minimal stand-in for the real
+        Phase 5 'Skip question' control (§10.2): no auth, no UI, just this.
+        False if nothing is currently pending."""
+        if self._awaiting_future is None or self._awaiting_future.done():
+            return False
+        stale_student = self._awaiting_student
+        if self._awaiting_kind == "choice":
+            self._awaiting_future.set_result("done")
+        else:  # "question" or "reply" — both treat None as abandonment
+            self._awaiting_future.set_result(None)
+        if self._loop is not None and stale_student is not None:
+            # In case that browser reconnects later — reset it to idle
+            # instead of leaving it showing a turn that's already over.
+            self._loop.create_task(self._notify(stale_student, {"type": "turn_ended"}))
+        return True
+
+    def notify_disconnect(self, student_id: str) -> None:
+        """Called from the WebSocket layer the moment a student's browser
+        drops. Found live: closing the browser mid-turn left the queue
+        stuck forever, since the initial question wait has no timeout by
+        design. Only actually starts a grace timer if we're waiting on
+        *this specific* student right now — a disconnect while just queued,
+        or after their turn is already over, needs no action."""
+        if self._awaiting_student != student_id or self._loop is None:
+            return
+        self._loop.create_task(self._disconnect_grace_timer(student_id))
+
+    async def _disconnect_grace_timer(self, student_id: str) -> None:
+        await asyncio.sleep(cfg.timings.disconnect_grace_s)
+        # Re-check at expiry, not just at start: they may have reconnected
+        # and completed the action already, or the orchestrator may have
+        # moved on to a different student entirely by now.
+        if (
+            self._awaiting_student == student_id
+            and self._awaiting_future is not None
+            and not self._awaiting_future.done()
+        ):
+            self.force_skip()
 
     def _resolve(self, kind: str, student_id: str, value) -> bool:
         if (

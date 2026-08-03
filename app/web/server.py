@@ -27,6 +27,9 @@ class ConnectionManager:
     def disconnect(self, student_id: str) -> None:
         self._sockets.pop(student_id, None)
 
+    def is_connected(self, student_id: str) -> bool:
+        return student_id in self._sockets
+
     async def send(self, student_id: str, message: dict) -> None:
         ws = self._sockets.get(student_id)
         if ws is None:
@@ -65,6 +68,16 @@ def create_app(orchestrator: Orchestrator, queue: QuestionQueue, connections: Co
             raise HTTPException(status_code=409, detail="Not currently READY.")
         return {"ok": True}
 
+    @app.post("/api/force_skip")
+    async def force_skip() -> dict:
+        # Same category as /api/start above — a minimal stand-in for one
+        # Phase 5 operator control ("Skip question", §10.2), added because
+        # a turn stuck waiting on a student who's gone (closed browser,
+        # disconnected) currently has no other way to unblock.
+        if not orchestrator.force_skip():
+            raise HTTPException(status_code=409, detail="Nothing is currently pending.")
+        return {"ok": True}
+
     @app.websocket("/ws/{student_id}")
     async def ws_endpoint(websocket: WebSocket, student_id: str) -> None:
         await connections.connect(student_id, websocket)
@@ -84,6 +97,7 @@ def create_app(orchestrator: Orchestrator, queue: QuestionQueue, connections: Co
                 await websocket.receive_text()
         except WebSocketDisconnect:
             connections.disconnect(student_id)
+            orchestrator.notify_disconnect(student_id)
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     return app

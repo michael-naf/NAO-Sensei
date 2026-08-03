@@ -81,7 +81,19 @@ class PlaybackQueue:
     def _prepare_loop(self) -> None:
         while True:
             u = self._pending.get()
-            token = self._sink.prepare(u.wav_path)
+            try:
+                token = self._sink.prepare(u.wav_path)
+            except Exception as e:
+                # An unhandled exception here used to kill this daemon
+                # thread silently — every utterance behind it in the queue
+                # would then sit in `pending` forever, and anything waiting
+                # on `on_utterance_end` for one of them (e.g.
+                # Orchestrator._wait_until_played) would hang with no
+                # diagnostic trail. Log and skip this one utterance instead;
+                # the loop, and everything queued after it, keeps going.
+                print(f"[AUDIO] prepare() failed for {u.wav_path!r}: {e!r} — skipping")
+                self._finish(u)
+                continue
             self._ready.put((u, token))
 
     def _play_loop(self) -> None:
@@ -98,15 +110,26 @@ class PlaybackQueue:
             if self.on_utterance_start is not None:
                 self.on_utterance_start(u)
 
-            self._sink.play(token)  # returns on natural completion OR stop_now()
+            try:
+                self._sink.play(token)  # returns on natural completion OR stop_now()
+            except Exception as e:
+                # Same reasoning as _prepare_loop above: don't let a single
+                # bad utterance take the whole playback thread down with it.
+                print(f"[AUDIO] play() failed for {u.wav_path!r}: {e!r}")
 
             self._playing_event.clear()
-            if self.on_utterance_end is not None:
-                self.on_utterance_end(u)
+            self._finish(u)
 
-            if self._pending.empty() and self._ready.empty():
-                if self.on_idle is not None:
-                    self.on_idle()
+    def _finish(self, u: Utterance) -> None:
+        """Common tail for an utterance that's done being processed —
+        whether it played normally, failed to prepare, or failed to play.
+        Callers waiting on on_utterance_end (e.g. _wait_until_played) don't
+        need to distinguish why; not calling this is what causes the hang."""
+        if self.on_utterance_end is not None:
+            self.on_utterance_end(u)
+        if self._pending.empty() and self._ready.empty():
+            if self.on_idle is not None:
+                self.on_idle()
 
 
 def _drain(q: queue.Queue) -> None:
