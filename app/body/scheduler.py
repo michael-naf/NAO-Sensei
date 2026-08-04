@@ -36,6 +36,13 @@ class Scheduler:
         self._task: asyncio.Task | None = None
         self._current_gestures: tuple[str, ...] = ("rest",)
         self._last_gesture: str | None = None
+        # What gaze should be right now, vs. what was actually last sent —
+        # see set_gaze()/_reconcile_gaze(). Gaze carries real communicative
+        # meaning (where NAO is "looking"), so a collision with an in-flight
+        # gesture postpones it to the next reconciliation point instead of
+        # dropping it outright.
+        self._desired_gaze: str | None = None
+        self._current_gaze: str | None = None
 
         playback.on_utterance_start = self._handle_utterance_start
 
@@ -70,13 +77,59 @@ class Scheduler:
     def _on_utterance_start_main(self, u: Utterance) -> None:
         gaze, gestures = _CONTEXTS.get(u.kind, ("class", ("rest",)))
         self._current_gestures = gestures
-        self._body.gaze(gaze)
+        self.set_gaze(gaze)
         self._fire_gesture()
+
+    def set_gaze(self, target: str) -> None:
+        """Request a gaze change (2026-08-04 redesign). Gaze carries real
+        meaning — where NAO is "looking" — so a collision with an
+        in-flight gesture postpones it instead of dropping it: remembered
+        in _desired_gaze, applied the moment _reconcile_gaze() next gets a
+        chance to run (the next utterance, or the next interval tick —
+        see _loop_body()) and the colliding gesture has finished. Also the
+        single owner of gaze for Orchestrator._set_body_state() and
+        _body_lecture_start()/_body_lecture_end(), not just this class's
+        own on_utterance_start hook — those call sites collide with an
+        in-flight point_slide/thinking/acknowledge just as easily."""
+        self._desired_gaze = target
+        self._reconcile_gaze()
+
+    def _reconcile_gaze(self) -> None:
+        if self._desired_gaze is None or self._desired_gaze == self._current_gaze:
+            return
+        if self.head_owned_by_gesture():
+            return  # still postponed — retried on the next tick
+        self._body.gaze(self._desired_gaze)
+        self._current_gaze = self._desired_gaze
+
+    def head_owned_by_gesture(self) -> bool:
+        """True while a gesture that carries its own HeadYaw/HeadPitch
+        keyframe is actively in flight. _fire_gesture()'s own
+        is_gesturing() guard already refuses to pick anything new for as
+        long as this is true, which is also what makes a pending gaze
+        change implicitly take priority over a competing gesture pick —
+        neither can proceed until the same is_gesturing() gate clears, so
+        there's nothing extra to arbitrate between them."""
+        return self._body.is_gesturing() and self._touches_head(self._last_gesture)
+
+    def _touches_head(self, gesture_name: str | None) -> bool:
+        if gesture_name is None:
+            return False
+        gesture = self._library.gestures.get(gesture_name)
+        if gesture is None:
+            return False
+        return any(
+            "HeadYaw" in kf.angles or "HeadPitch" in kf.angles for kf in gesture.keyframes
+        )
 
     async def _loop_body(self) -> None:
         while True:
             interval = random.uniform(*cfg.gestures.interval_s)
             await asyncio.sleep(interval)
+            # Catches up a postponed gaze even when nothing new is playing
+            # (e.g. sitting in CHECKPOINT/PAUSED, no utterance-start events
+            # to trigger it otherwise).
+            self._reconcile_gaze()
             if self._playback.is_playing():
                 self._fire_gesture()
 

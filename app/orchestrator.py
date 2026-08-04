@@ -459,14 +459,33 @@ class Orchestrator:
         self.fault_message = message
         print(f"[FAULT] {message}")  # operator console alert lands in Phase 5
 
+    def _set_gaze(self, target: str) -> None:
+        """Every gaze() call in this class goes through here, not
+        self._body.gaze() directly — the scheduler is the single owner of
+        gaze so a change requested while a head-moving gesture is in
+        flight is postponed and retried rather than silently colliding
+        with it (see Scheduler.set_gaze()). Falls back to a direct call
+        only if there's genuinely no scheduler (body without gestures
+        enabled) — main.py always builds them as a pair otherwise."""
+        if self._scheduler is not None:
+            self._scheduler.set_gaze(target)
+        elif self._body is not None:
+            self._body.gaze(target)
+
     def _set_body_state(self, state: LectureState) -> None:
         if self._body is None:
             return
         self._body.leds(_LED_PATTERNS.get(state, "off"))
         if state in (LectureState.CHECKPOINT, LectureState.PAUSED):
             # §12.4.2 — no utterance is playing in these states, so nothing
-            # drives gaze via the scheduler's on_utterance_start hook.
-            self._body.gaze("class")
+            # drives gaze via the scheduler's on_utterance_start hook. Routed
+            # through the scheduler (not self._body.gaze() directly) so a
+            # gesture still in flight from just before the transition
+            # (point_slide/thinking/acknowledge — all carry their own head
+            # keyframe) postpones this instead of colliding with it; the
+            # scheduler's own interval tick retries it even though nothing
+            # is playing here to trigger a retry otherwise.
+            self._set_gaze("class")
 
     async def _body_lecture_start(self) -> None:
         if self._body is not None:
@@ -478,7 +497,7 @@ class Orchestrator:
             # can't collide with a random gesture pick, no is_gesturing()
             # race to worry about. gesture() itself is non-blocking; the
             # wave plays out concurrently with (not before) the spoken line.
-            self._body.gaze("class")
+            self._set_gaze("class")
             self._body.gesture("wave")
         # Spoken regardless of whether a Body is configured — the greeting
         # is a narration feature; the wave above is just its (optional)
@@ -494,7 +513,23 @@ class Orchestrator:
         if self._scheduler is not None:
             self._scheduler.stop()
         if self._body is not None:
-            self._body.gaze("class")
+            # A head-moving gesture (point_slide/thinking/acknowledge)
+            # fired moments before the lecture ended can still be
+            # physically in flight — scheduler.stop() only stops *future*
+            # picks, not one already underway, and unlike mid-lecture
+            # there's no *next* utterance/tick left to retry a postponed
+            # gaze on, so this is the one place that still waits it out
+            # explicitly (capped, same pattern as the wave-completion wait
+            # below) rather than trusting a later reconciliation.
+            elapsed = 0.0
+            while (
+                self._scheduler is not None
+                and self._scheduler.head_owned_by_gesture()
+                and elapsed < 5.0
+            ):
+                await asyncio.sleep(0.1)
+                elapsed += 0.1
+            self._set_gaze("class")
             self._body.gesture("wave")
         await self._say(self._filler_bank.goodbye_text)
         if self._body is not None:

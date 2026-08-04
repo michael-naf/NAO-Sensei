@@ -903,9 +903,21 @@ contains no lecture logic.
 | `/volume` | POST | `{"level": int}` | `ALAudioDevice.setOutputVolume()`, 0–100 |
 | `/posture` | POST | `{"name": "Sit"}` | `ALRobotPosture.goToPosture(name, 0.4)` |
 | `/gesture` | POST | `{"name": str, "keyframes": [...], "speed": float}` | Runs `ALMotion.angleInterpolation` in a worker thread; returns immediately |
-| `/gaze` | POST | `{"target": str}` | `"slides"` \| `"class"` — head joints only |
+| `/gaze` | POST | `{"HeadYaw": float, "HeadPitch": float}` | Explicit resolved angles, not a target name — see note below |
 | `/leds` | POST | `{"pattern": str}` | Set an LED pattern |
 | `/stiffness` | POST | `{"on": bool}` | Whole-body stiffness at lecture start/end |
+
+**`/gaze` takes resolved angles, not a symbolic target (corrected
+2026-08-04).** An earlier draft of this table had `{"target": str}` — but
+§12.1.1 requires every request touching joints, `/gesture` *and* `/gaze`
+alike, to be filtered against the whitelist before reaching `ALMotion`.
+That check is only meaningful against actual joint names; a bare
+`"slides"`/`"class"` string has none to filter, and the bridge is
+supposed to contain no lecture logic (it wouldn't otherwise know what
+those names mean). The PC resolves `gestures.yaml`'s `gaze:` section
+(§12.6.3) into `HeadYaw`/`HeadPitch` radians itself and sends those,
+exactly as `/gesture` already sends resolved keyframe angles rather than
+a gesture name the bridge would have to look up.
 
 **The HTTP server must be threaded** (`SocketServer.ThreadingMixIn`). A
 single-threaded server queues `/stop` behind the blocking `/play` it is trying

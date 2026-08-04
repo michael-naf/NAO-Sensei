@@ -6,8 +6,6 @@ rest:
   duration_s: 1.2
   keyframes:
     - t: 1.2
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
@@ -26,8 +24,6 @@ wave:
   duration_s: 2.36
   keyframes:
     - t: 0.0
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
@@ -90,8 +86,6 @@ wave:
       LShoulderRoll: 1.111775
       LWristYaw: -0.139626
     - t: 2.36
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
@@ -163,8 +157,6 @@ explain_open:
   duration_s: 4.16
   keyframes:
     - t: 0.0
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
@@ -178,8 +170,6 @@ explain_open:
       RShoulderRoll: -0.284300
       RWristYaw: -0.028187
     - t: 0.56
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.233948
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -193,8 +183,6 @@ explain_open:
       RShoulderRoll: 0.176278
       RWristYaw: 0.546288
     - t: 0.96
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.233948
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -208,8 +196,6 @@ explain_open:
       RShoulderRoll: 0.176278
       RWristYaw: 0.546288
     - t: 1.36
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.036726
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -241,8 +227,6 @@ explain_open:
       RShoulderPitch: 0.806342
       RShoulderRoll: 0.068068
     - t: 2.56
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.036726
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -256,8 +240,6 @@ explain_open:
       RShoulderRoll: 0.176278
       RWristYaw: 0.546288
     - t: 2.96
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.233948
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -271,8 +253,6 @@ explain_open:
       RShoulderRoll: 0.176278
       RWristYaw: 0.546288
     - t: 3.36
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.233948
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -286,8 +266,6 @@ explain_open:
       RShoulderRoll: 0.176278
       RWristYaw: 0.546288
     - t: 4.16
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
@@ -306,8 +284,6 @@ beat:
   duration_s: 4.2
   keyframes:
     - t: 0.0
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
@@ -321,8 +297,6 @@ beat:
       RShoulderRoll: -0.284300
       RWristYaw: -0.028187
     - t: 0.56
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.233948
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -336,8 +310,6 @@ beat:
       RShoulderRoll: -0.291470
       RWristYaw: -0.027925
     - t: 0.96
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.233948
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -351,8 +323,6 @@ beat:
       RShoulderRoll: -0.291470
       RWristYaw: -0.027925
     - t: 1.24
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.036726
       LElbowYaw: -1.459095
       LHand: 1.000000
@@ -427,8 +397,6 @@ beat:
       RShoulderRoll: -0.291470
       RWristYaw: -0.027925
     - t: 4.2
-      HeadPitch: -0.041127
-      HeadYaw: -0.028594
       LElbowRoll: -1.206818
       LElbowYaw: -0.453286
       LHand: 0.302282
