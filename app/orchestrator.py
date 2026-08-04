@@ -246,7 +246,7 @@ class Orchestrator:
         self.state.transition(LectureState.NARRATING)
         self._set_body_state(LectureState.NARRATING)
         await self._notify_all({"type": "lecture_status", "state": self.state.state.name})
-        self._body_lecture_start()
+        await self._body_lecture_start()
 
     async def _narrate(self, pptx_path: str) -> None:
         assert self._loop is not None
@@ -313,7 +313,7 @@ class Orchestrator:
                         if is_last_section:
                             self.state.transition(LectureState.FINISHED)
                             self._set_body_state(LectureState.FINISHED)
-                            self._body_lecture_end()
+                            await self._body_lecture_end()
                             self.position += 1
                             return
                     else:
@@ -331,7 +331,7 @@ class Orchestrator:
 
         self.state.transition(LectureState.FINISHED)
         self._set_body_state(LectureState.FINISHED)
-        self._body_lecture_end()
+        await self._body_lecture_end()
 
     async def _handle_slide_fault(self, message: str) -> str:
         """A COM fault from either open() or goto() (§6.4) — the orchestrator
@@ -379,10 +379,7 @@ class Orchestrator:
         raises CancelledError, so this never double-runs against it."""
         assert self._loop is not None
         self._playback.stop_now()
-        if self._scheduler is not None:
-            self._scheduler.stop()
-        if self._body is not None:
-            self._body.stiffness(False)
+        await self._body_lecture_end()
         try:
             await self._loop.run_in_executor(None, self._slides.close)
         except SlideControllerError:
@@ -471,17 +468,44 @@ class Orchestrator:
             # drives gaze via the scheduler's on_utterance_start hook.
             self._body.gaze("class")
 
-    def _body_lecture_start(self) -> None:
+    async def _body_lecture_start(self) -> None:
         if self._body is not None:
             self._body.posture("Sit")
             self._body.stiffness(True)
+            # Fired *before* scheduler.start(), so the scheduler's
+            # on_utterance_start hook is still inert (its own self._loop is
+            # None until start() sets it) — the greeting utterance below
+            # can't collide with a random gesture pick, no is_gesturing()
+            # race to worry about. gesture() itself is non-blocking; the
+            # wave plays out concurrently with (not before) the spoken line.
+            self._body.gaze("class")
+            self._body.gesture("wave")
+        # Spoken regardless of whether a Body is configured — the greeting
+        # is a narration feature; the wave above is just its (optional)
+        # visual accompaniment.
+        await self._say(self._filler_bank.hello_text)
         if self._scheduler is not None:
             self._scheduler.start()
 
-    def _body_lecture_end(self) -> None:
+    async def _body_lecture_end(self) -> None:
+        """Shared by both ways a lecture can end — a natural finish
+        (_narrate()) and an operator End lecture/Exit (_end_lecture_
+        shutdown()) — so the goodbye wave+line only needs writing once."""
         if self._scheduler is not None:
             self._scheduler.stop()
         if self._body is not None:
+            self._body.gaze("class")
+            self._body.gesture("wave")
+        await self._say(self._filler_bank.goodbye_text)
+        if self._body is not None:
+            # gesture() doesn't block, and unlike hello there's nothing
+            # else left to narrate — wait for the wave to actually finish
+            # so stiffness(False) doesn't cut it off mid-motion. Capped so
+            # a stuck is_gesturing() can never hang shutdown indefinitely.
+            elapsed = 0.0
+            while self._body.is_gesturing() and elapsed < 5.0:
+                await asyncio.sleep(0.1)
+                elapsed += 0.1
             self._body.stiffness(False)
 
     # ---- Q&A (§6.3, §7) ---------------------------------------------
@@ -1041,6 +1065,8 @@ class _FillerBank:
         self.decline_text = sections.get("decline", [""])[0]
         self.qa_start_text = sections.get("qa_start", [""])[0]
         self.qa_end_text = sections.get("qa_end", [""])[0]
+        self.hello_text = sections.get("hello", [""])[0]
+        self.goodbye_text = sections.get("goodbye", [""])[0]
         self._stage1_wavs: list[str] = []
         self._rotation = 0
 

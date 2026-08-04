@@ -49,6 +49,17 @@ class Scheduler:
         if self._task is not None:
             self._task.cancel()
             self._task = None
+        # Also deactivates _handle_utterance_start's guard, not just the
+        # periodic interval loop above — found live, 2026-08-04: without
+        # this, an utterance played *after* stop() (e.g. the goodbye line
+        # enqueued by _body_lecture_end(), right after it calls
+        # scheduler.stop()) still ran _on_utterance_start_main, which
+        # unconditionally overwrites gaze even though is_gesturing()
+        # correctly skipped picking a new gesture — NAO's gaze snapped to
+        # "slides" mid-farewell instead of staying on the class. Matches
+        # the same None-until-start() state _loop already has before the
+        # first start() ever runs.
+        self._loop = None
 
     def _handle_utterance_start(self, u: Utterance) -> None:
         # Fires on the play thread — marshal via call_soon_threadsafe before

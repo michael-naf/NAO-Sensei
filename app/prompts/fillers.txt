@@ -15,3 +15,9 @@ I will answer some questions now.
 
 [qa_end]
 Let's go on with the presentation.
+
+[hello]
+Hello everyone! My name is Nao, and today I am your teacher.
+
+[goodbye]
+Thanks everyone see you next time!

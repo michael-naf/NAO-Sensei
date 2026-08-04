@@ -46,9 +46,9 @@ audio:
   max_sentence_chars: 300
 
 slides:
-  display: 1                # projector monitor index — TEMP: only 1 monitor
-                             # connected right now (2026-08-02), revert to 2
-                             # once the second display is back
+  display: 2                # projector monitor index — restored 2026-08-04,
+                             # second display (\\.\DISPLAY6, 1920x1080 at
+                             # 2560,0) confirmed connected again
   com_timeout_s: 5
 
 timings:
