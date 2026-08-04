@@ -21,11 +21,15 @@ except OSError:
 
 import uvicorn
 
+from app.audio.nao_sink import NaoAudioSink
 from app.audio.pc_sink import PcAudioSink
 from app.audio.playback_queue import PlaybackQueue
+from app.audio.sink import AudioSink
+from app.body.body import Body
 from app.body.console_body import ConsoleBody
 from app.body.gesture_library import GestureLibraryError
 from app.body.gesture_library import load as load_gesture_library
+from app.body.nao_body import NaoBody
 from app.body.scheduler import Scheduler
 from app.config import cfg
 from app.orchestrator import Orchestrator
@@ -67,26 +71,42 @@ def _run_validate(pptx_path: str) -> int:
     return 1
 
 
-def _build_body(playback: PlaybackQueue) -> tuple[ConsoleBody | None, Scheduler | None]:
-    """content/gestures.yaml is still being authored (Phase 3C, in
-    Choregraphe) — only load it once it's a real file, not the original
-    0-byte placeholder. Once it's real, a validation failure must block
-    startup (§12.6.2) same as any other config problem; this is not the
-    "gesture failure is non-fatal" rule, which is about runtime gesture
-    calls, not the load-time safety check."""
-    if cfg.body != "console" or not cfg.gestures.enabled:
+def _build_sink() -> AudioSink:
+    """NFR-5's swap point: audio_output: pc | nao is the *only* thing that
+    changes to move playback onto real NAO hardware — Orchestrator and
+    PlaybackQueue never know which one they're holding."""
+    if cfg.audio_output == "nao":
+        return NaoAudioSink()
+    return PcAudioSink()
+
+
+def _build_body(playback: PlaybackQueue) -> tuple[Body | None, Scheduler | None]:
+    """content/gestures.yaml is real as of Phase 3C.1 (2026-08-04) — this
+    still guards against a 0-byte/missing file defensively (e.g. a fresh
+    checkout before it's been generated), not because it's expected to be
+    a placeholder in normal operation anymore. Once it's real, a
+    validation failure must block startup (§12.6.2) same as any other
+    config problem; this is not the "gesture failure is non-fatal" rule,
+    which is about runtime gesture calls, not the load-time safety check.
+
+    body: console | nao (NFR-9's swap point, mirrors _build_sink() above)
+    — console builds ConsoleBody regardless of audio_output, since the two
+    seams are independent (e.g. real NAO audio with console-logged
+    gestures is a valid combination while bringing hardware up
+    incrementally per implementationPlan.md's Phase 6 bring-up order)."""
+    if cfg.body not in ("console", "nao") or not cfg.gestures.enabled:
         return None, None
 
     path = Path(cfg.gestures.library)
     if not path.exists() or path.stat().st_size == 0:
-        print(f"NOTE: {path} not yet authored — running without embodiment (Phase 3C in progress).")
+        print(f"NOTE: {path} not yet authored — running without embodiment.")
         return None, None
 
-    # Once the file is real, a validation failure must block startup
-    # (§12.6.2) like any other config problem — left to propagate to
-    # _run_lecture()'s caller rather than caught here.
+    # A validation failure must block startup (§12.6.2) like any other
+    # config problem — left to propagate to _run_lecture()'s caller rather
+    # than caught here.
     library = load_gesture_library(str(path))
-    body = ConsoleBody(library)
+    body: Body = NaoBody(library) if cfg.body == "nao" else ConsoleBody(library)
     scheduler = Scheduler(playback, body, library)
     return body, scheduler
 
@@ -131,7 +151,7 @@ async def _run_lecture() -> int:
 
     script = parse(cfg.lecture.pptx_path)
 
-    sink = PcAudioSink()
+    sink = _build_sink()
     if not sink.is_available():
         print("ERROR: no audio output device available", file=sys.stderr)
         return 1

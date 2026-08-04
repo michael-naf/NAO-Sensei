@@ -488,9 +488,19 @@ class Orchestrator:
             self._set_gaze("class")
 
     async def _body_lecture_start(self) -> None:
+        assert self._loop is not None
         if self._body is not None:
-            self._body.posture("Sit")
-            self._body.stiffness(True)
+            # Unlike gesture()/gaze() (explicitly non-blocking by the Body
+            # protocol's own contract), posture()/stiffness() carry no such
+            # promise — ConsoleBody's versions are instant prints, but
+            # NaoBody's are real HTTP calls that block for real seconds
+            # (up to nao.timeouts.posture_s = 15s). Calling either bare on
+            # the event loop thread would freeze the whole app — WebSocket
+            # pushes, the HTTP server, everything — for that long. Routed
+            # through the executor like every other genuinely-blocking call
+            # in this file (TTS synthesis, slide COM, LLM reachability).
+            await self._loop.run_in_executor(None, self._body.posture, "Sit")
+            await self._loop.run_in_executor(None, self._body.stiffness, True)
             # Fired *before* scheduler.start(), so the scheduler's
             # on_utterance_start hook is still inert (its own self._loop is
             # None until start() sets it) — the greeting utterance below
@@ -541,7 +551,8 @@ class Orchestrator:
             while self._body.is_gesturing() and elapsed < 5.0:
                 await asyncio.sleep(0.1)
                 elapsed += 0.1
-            self._body.stiffness(False)
+            assert self._loop is not None
+            await self._loop.run_in_executor(None, self._body.stiffness, False)
 
     # ---- Q&A (§6.3, §7) ---------------------------------------------
 
