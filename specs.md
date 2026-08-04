@@ -1018,6 +1018,17 @@ and must be animated explicitly.
 - Callbacks fire on the play thread and **must** marshal via
   `loop.call_soon_threadsafe` before touching state (§4.3, rule 2).
 
+**`wave` is a one-shot exception to all of the above** (added 2026-08-03,
+with the real gesture data — see §12.6.2's table). It is never chosen by
+the scheduler's random per-context rotation and is not listed in any
+`_CONTEXTS`-style table — it is fired directly by the orchestrator exactly
+twice per lecture: once at lecture start (paired with a spoken greeting,
+non-blocking — narration is not delayed for it) and once at lecture end
+(paired with a spoken farewell, this time *waited on* via
+`Body.is_gesturing()` before stiffness is released, so the wave itself
+isn't physically cut short). A future reader looking for `wave` in the
+scheduler's context table won't find it there on purpose.
+
 #### 12.4.2 Context sets
 
 | Orchestrator state | Gaze | Gesture set |
@@ -1166,6 +1177,7 @@ explain_open:
 | `beat` | narrating, answering | Small forward emphasis beat. |
 | `thinking` | filler | One hand toward chin height, slight head tilt. |
 | `acknowledge` | answering | Small nod plus a low arm movement. |
+| `wave` | greeting (one-shot, not in the scheduler's rotation — §12.4.1) | One-armed wave. Fired directly by the orchestrator once at lecture start (paired with a spoken hello) and once at lecture end (paired with a spoken goodbye), never chosen at random during narration/Q&A. |
 
 > **All angle values above are starting points.** Tune them against the
 > Choregraphe virtual robot in Phase 3 — seated — and validate against NAO V5's
