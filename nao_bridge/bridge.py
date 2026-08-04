@@ -17,6 +17,7 @@ from __future__ import print_function
 import json
 import sys
 import threading
+import time
 import traceback
 from BaseHTTPServer import BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn, TCPServer
@@ -35,6 +36,17 @@ AUDIO_DIR = "/home/nao/lecture_audio"
 # the bridge has no config.yaml of its own (PC-only); Phase 7 tunes this by
 # hand against the physical robot if it ever needs to change.
 MOTION_SPEED = 0.15
+
+def _to_str(value):
+    """json.loads() on Python 2.7 always produces unicode for JSON strings,
+    never native str -- and NAOqi's ALProxy bindings reject unicode with a
+    cryptic "conversion failure from Value to Unknown" error (found live,
+    2026-08-04, on the very first /posture call). Every string that came
+    from JSON and is about to cross into an ALProxy call needs this. Plain
+    .encode('utf-8') is safe here -- joint names, posture names, and
+    filesystem paths in this project are always ASCII."""
+    return value.encode("utf-8") if isinstance(value, unicode) else value
+
 
 _LED_RGB = {
     "white": 0x00FFFFFF,
@@ -65,6 +77,22 @@ class Proxies(object):
         # Sec12.4.4 -- permanently on. Seated, the thighs occupy space a
         # lowered arm wants to pass through.
         self.motion.setCollisionProtectionEnabled("Arms", True)
+        # Found live, 2026-08-04: NAOqi's own Autonomous Life (background
+        # behaviors -- ALBasicAwareness's face-tracking in particular) was
+        # still moving NAO's head on its own, independent of anything this
+        # bridge does. This project's whole design (gesture_library.py,
+        # Scheduler, the "one gesture at a time" / no-concurrent-
+        # angleInterpolation-on-the-same-joint guarantee) assumes NAO's
+        # head/arms are *entirely* under this bridge's control -- a
+        # background face-track fights our own gaze()/gesture() calls on
+        # exactly the same joints. Disabled at startup, not per-request:
+        # this must hold for the whole session, not just while gestures
+        # are firing.
+        try:
+            life = ALProxy("ALAutonomousLife", NAOQI_IP, NAOQI_PORT)
+            life.setState("disabled")
+        except Exception:
+            traceback.print_exc()  # non-fatal -- log and continue, per module docstring
 
     def reconnect(self):
         with self._lock:
@@ -80,14 +108,40 @@ def _run_gesture(keyframes, speed):
     reached, so the loop naturally sequences the whole gesture. "t" is
     ordering only (see specs.md Sec12.4.1's note) -- the PC-recorded times
     came from Choregraphe's own simulator and have no relationship to
-    this speed cap, so they are never used as literal timing here."""
+    this speed cap, so they are never used as literal timing here --
+    *except* for the one case below.
+
+    A same-pose "hold" keyframe (an authored pause) was silently a no-op:
+    angleInterpolationWithSpeed sees zero distance to travel and returns
+    almost instantly, so the pause never actually happened no matter what
+    "t" gap the content author gave it. That is the one place "t" is read
+    as a literal duration: a same-pose keyframe sleeps for the recorded
+    gap instead of calling into ALMotion at all.
+
+    2026-08-04 note: an apparent "no motion at all" regression from this
+    exact change turned out to be unrelated -- NAO's stiffness had
+    independently dropped to 0 (most likely physical contact with the
+    chest button during hands-on testing), which no motion command of any
+    kind could work around. Confirmed via ALMotion.getStiffnesses(): the
+    unmodified original code produced the identical no-motion symptom
+    under stiffness=0, and both versions moved normally again once
+    stiffness was restored. This logic itself was never the problem."""
     try:
+        prev_t = 0.0
+        prev_pose = None
         for kf in keyframes:
-            joints = [j for j in kf.keys() if j != "t"]
-            if not joints:
+            t = kf.get("t", 0.0)
+            pose = dict((k, v) for k, v in kf.items() if k != "t")
+            if not pose:
+                prev_t, prev_pose = t, pose
                 continue
-            angles = [kf[j] for j in joints]
-            PROXIES.motion.angleInterpolationWithSpeed(joints, angles, speed)
+            if pose == prev_pose:
+                time.sleep(max(0.0, t - prev_t))
+            else:
+                joints = [_to_str(j) for j in pose.keys()]
+                angles = [pose[j] for j in pose.keys()]
+                PROXIES.motion.angleInterpolationWithSpeed(joints, angles, speed)
+            prev_t, prev_pose = t, pose
     except Exception:
         traceback.print_exc()
 
@@ -157,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
     def _play(self):
         # Blocks until playback finishes -- matches the PC client's own
         # (WAV duration + margin) timeout, never an infinite wait.
-        PROXIES.audio_player.playFile(self._read_json()["remote_path"])
+        PROXIES.audio_player.playFile(_to_str(self._read_json()["remote_path"]))
         self._send_json(200, {"ok": True})
 
     def _stop(self):
@@ -169,7 +223,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True})
 
     def _posture(self):
-        name = self._read_json()["name"]
+        name = _to_str(self._read_json()["name"])
         PROXIES.posture.goToPosture(name, 0.4)
         self._send_json(200, {"ok": True})
 
@@ -203,8 +257,8 @@ class Handler(BaseHTTPRequestHandler):
         if bad_joint is not None:
             return self._send_json(
                 403, {"error": "joint not whitelisted: " + bad_joint})
-        joints = list(body.keys())
-        angles = [body[j] for j in joints]
+        joints = [_to_str(j) for j in body.keys()]
+        angles = [body[j] for j in body.keys()]
         t = threading.Thread(target=_run_gaze, args=(joints, angles, MOTION_SPEED))
         t.daemon = True
         t.start()

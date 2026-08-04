@@ -47,6 +47,22 @@ _HAND_JOINTS = {"LHand", "RHand"}
 
 _REST_TOLERANCE = 1e-6
 
+# §12.4.4 — "slow interpolation... gestures.speed 0.10-0.20 max speed
+# fraction". Same bound enforced here for the optional per-gesture speed
+# override (see Gesture.speed) — it must stay inside a safety range, not
+# just inherit one by default.
+#
+# Upper bound widened 0.20 -> 0.30, 2026-08-04, at the user's explicit
+# request and live-tested directly on the robot (wave felt too slow at
+# 0.20; 0.4 was also requested but the user chose to try 0.3 first given
+# the "don't break NAO" priority — see CLAUDE.md). This is a deliberate,
+# confirmed deviation from specs.md's original ceiling, not an oversight;
+# specs.md should be updated to match once a final value is settled. Still
+# scoped to individual gestures via Gesture.speed, not the global default —
+# most gestures stay at 0.10-0.20 unless a specific one is deliberately
+# tuned past it the same way.
+_SPEED_RANGE = (0.10, 0.30)
+
 
 class GestureLibraryError(Exception):
     pass
@@ -64,6 +80,14 @@ class Gesture:
     duration_s: float
     contexts: tuple[str, ...]
     keyframes: tuple[Keyframe, ...]
+    # None = use config.yaml's gestures.speed (the common case). Only set
+    # per-gesture when one specific gesture needs to differ from the rest
+    # (found live, 2026-08-04: wave felt slow at the global 0.15 while
+    # every other gesture was approved as-is at that same speed — a global
+    # bump would have disturbed already-approved gestures). Same 0.10-0.20
+    # safety range as the global value, enforced below — this is not a
+    # backdoor around §12.4.4's speed cap, just a per-gesture pick within it.
+    speed: float | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +153,13 @@ def _parse_gesture(name: str, spec: dict, errors: list[str]) -> Gesture:
         duration_s = 0.0
     contexts = tuple(spec.get("contexts", []))
 
+    speed = spec.get("speed")
+    if speed is not None and not (_SPEED_RANGE[0] <= speed <= _SPEED_RANGE[1]):
+        errors.append(
+            f"Gesture '{name}' sets speed={speed}, outside the safety range "
+            f"[{_SPEED_RANGE[0]}, {_SPEED_RANGE[1]}] (§12.4.4)."
+        )
+
     keyframes: list[Keyframe] = []
     for kf in spec.get("keyframes", []):
         t = kf.get("t")
@@ -142,7 +173,9 @@ def _parse_gesture(name: str, spec: dict, errors: list[str]) -> Gesture:
     if not keyframes:
         errors.append(f"Gesture '{name}' has no keyframes.")
 
-    return Gesture(name=name, duration_s=duration_s, contexts=contexts, keyframes=tuple(keyframes))
+    return Gesture(
+        name=name, duration_s=duration_s, contexts=contexts, keyframes=tuple(keyframes), speed=speed
+    )
 
 
 def _validate_joint(owner: str, joint: str, angle: float, errors: list[str]) -> None:

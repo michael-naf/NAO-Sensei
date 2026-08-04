@@ -22,6 +22,7 @@ rest:
 wave:
   contexts: [greeting]
   duration_s: 2.36
+  speed: 0.30
   keyframes:
     - t: 0.0
       LElbowRoll: -1.206818
@@ -412,7 +413,7 @@ beat:
 
 thinking:
   contexts: [filler]
-  duration_s: 1.56
+  duration_s: 1.96
   keyframes:
     - t: 0.0
       HeadPitch: -0.041127
@@ -444,7 +445,7 @@ thinking:
       RShoulderPitch: 0.932451
       RShoulderRoll: -0.284300
       RWristYaw: -0.028187
-    - t: 0.96
+    - t: 1.36
       HeadPitch: -0.041127
       HeadYaw: -0.028594
       LElbowRoll: -1.544616
@@ -459,7 +460,7 @@ thinking:
       RShoulderPitch: 0.932451
       RShoulderRoll: -0.284300
       RWristYaw: -0.028187
-    - t: 1.56
+    - t: 1.96
       HeadPitch: -0.041127
       HeadYaw: -0.028594
       LElbowRoll: -1.206818

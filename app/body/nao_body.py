@@ -40,7 +40,11 @@ class NaoBody:
             return
         self._gesture_until = time.monotonic() + gesture.duration_s * _DURATION_SAFETY_MARGIN
         keyframes = [{"t": kf.t, **kf.angles} for kf in gesture.keyframes]
-        body = {"name": name, "keyframes": keyframes, "speed": cfg.gestures.speed}
+        # gesture.speed is None for the common case (inherit the global
+        # config value); only set when this specific gesture was tuned to
+        # differ from it (see Gesture.speed's own docstring).
+        speed = gesture.speed if gesture.speed is not None else cfg.gestures.speed
+        body = {"name": name, "keyframes": keyframes, "speed": speed}
         self._fire(f"gesture {name!r}", "/gesture", body, cfg.nao.timeouts.motion_s)
 
     def gaze(self, target: str) -> None:

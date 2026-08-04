@@ -1076,7 +1076,12 @@ levels:
    and fall with no gesture involved at all. Seated, the failure mode does not
    exist.
 3. **Slow interpolation.** `gestures.speed` 0.10–0.20 max speed fraction — which
-   is also the intended aesthetic.
+   is also the intended aesthetic. A gesture may override this per-gesture
+   (`Gesture.speed` in `gesture_library.py`, validated against the same kind
+   of range) when live-tested and confirmed safe on the robot — `wave` is
+   the first case, tuned to 0.30 on real hardware 2026-08-04 after 0.15 and
+   0.20 both felt too slow to read as a natural greeting. Confirmed by the
+   user watching the physical robot directly, not a code-only decision.
 
 Additional rules:
 

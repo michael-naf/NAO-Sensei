@@ -86,7 +86,12 @@ gestures:
   previewer: true           # stick-figure preview on operator console
 
 nao:
-  bridge_url: http://192.168.1.50:8765   # TODO: set to the robot's real address in Phase 6
+  # 169.254.242.9 — NAO's link-local address over a direct Ethernet cable
+  # (2026-08-04). The WiFi address (172.16.180.5) is unreachable from this
+  # PC due to client/AP isolation on the university network — see
+  # CLAUDE.md's Environment table. Link-local, so it holds as long as the
+  # cable stays connected; re-verify with `ping` if it's ever unplugged.
+  bridge_url: http://169.254.242.9:8765
   audio_dir: /home/nao/lecture_audio
   volume: 70                # 0–100, set explicitly at lecture start — §12.5
   timeouts:                 # §12.1.2
