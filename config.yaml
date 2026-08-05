@@ -1,5 +1,5 @@
-audio_output: pc            # pc | nao
-body: console               # console | nao          — §12.6
+audio_output: nao           # pc | nao
+body: nao                   # console | nao          — §12.6
 
 lecture:
   pptx_path: ./content/lecture.pptx
@@ -84,6 +84,10 @@ gestures:
   interval_s: [8, 12]       # jittered range between gestures — §12.4.1
   speed: 0.15               # ALMotion max-speed fraction, 0.10–0.20 — §12.4.4
   previewer: true           # stick-figure preview on operator console
+  slide_glance_hold_s: 3.0  # how long the brief gaze-at-slides glance holds
+                             # after each slide change, before narration's
+                             # first utterance reconciles gaze back to class
+                             # — user-tuned live 2026-08-05
 
 nao:
   # 169.254.242.9 — NAO's link-local address over a direct Ethernet cable

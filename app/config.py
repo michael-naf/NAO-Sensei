@@ -101,6 +101,7 @@ class GesturesConfig:
     interval_s: tuple[float, float]
     speed: float
     previewer: bool
+    slide_glance_hold_s: float
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,7 @@ def _load(path: Path) -> Config:
             interval_s=tuple(_get(gestures, "interval_s", "gestures")),
             speed=_get(gestures, "speed", "gestures"),
             previewer=_get(gestures, "previewer", "gestures"),
+            slide_glance_hold_s=_get(gestures, "slide_glance_hold_s", "gestures"),
         ),
         nao=NaoConfig(
             bridge_url=_get(nao, "bridge_url", "nao"),

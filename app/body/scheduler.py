@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 
 from app.audio.playback_queue import PlaybackQueue, Utterance
 from app.body.body import Body
@@ -14,11 +15,29 @@ from app.config import cfg
 # maps to NARRATING, filler to "ANSWERING - filler playing", answer to
 # "ANSWERING - answer playing". No separate orchestrator-state wiring needed
 # for gaze/gestures specifically (§4.4's own design already promises this).
+#
+# narration's gaze target was "slides" until 2026-08-05 -- user-requested
+# change: NAO should face the class most of the time, with a brief
+# deliberate glance at the slides specifically when the slide changes
+# (Orchestrator._narrate(), right after goto()), not as the default
+# baseline gaze for the entire time it's talking. point_slide dropped
+# from narration's gesture pool the same day -- it's now a guaranteed
+# one-shot at the lecture's opening line (_narrate()'s position==0
+# check), not a random pick; leaving it in this pool risked it recurring
+# again later by chance, which read as redundant when it happened right
+# before the goodbye.
 _CONTEXTS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "narration": ("slides", ("explain_open", "point_slide", "beat")),
+    "narration": ("class", ("explain_open", "beat")),
     "filler": ("class", ("thinking",)),
     "answer": ("class", ("explain_open", "beat", "acknowledge")),
 }
+
+# Casual class-gaze scanning (2026-08-05): cycled on the same periodic
+# tick that already drives gesture picks (_loop_body()) rather than a
+# second timer. Small side-to-side variation so "looking at the class"
+# doesn't read as a single fixed stare -- see their angles' own comment
+# in gestures.yaml.
+_CLASS_GAZE_VARIANTS = ("class", "class_left", "class_right")
 
 
 class Scheduler:
@@ -43,6 +62,10 @@ class Scheduler:
         # dropping it outright.
         self._desired_gaze: str | None = None
         self._current_gaze: str | None = None
+        # A held glance (e.g. the slide-change cue) that must survive
+        # narration's own per-utterance gaze reconciliation without
+        # blocking playback — see set_gaze()'s hold_s parameter.
+        self._gaze_hold_until: float = 0.0
 
         playback.on_utterance_start = self._handle_utterance_start
 
@@ -80,7 +103,7 @@ class Scheduler:
         self.set_gaze(gaze)
         self._fire_gesture()
 
-    def set_gaze(self, target: str) -> None:
+    def set_gaze(self, target: str, hold_s: float = 0.0) -> None:
         """Request a gaze change (2026-08-04 redesign). Gaze carries real
         meaning — where NAO is "looking" — so a collision with an
         in-flight gesture postpones it instead of dropping it: remembered
@@ -90,7 +113,25 @@ class Scheduler:
         single owner of gaze for Orchestrator._set_body_state() and
         _body_lecture_start()/_body_lecture_end(), not just this class's
         own on_utterance_start hook — those call sites collide with an
-        in-flight point_slide/thinking/acknowledge just as easily."""
+        in-flight point_slide/thinking/acknowledge just as easily.
+
+        hold_s (2026-08-05, user-requested): a deliberate glance (e.g. the
+        slide-change cue) that must survive narration's own per-utterance
+        reconciliation for hold_s seconds, without blocking narration
+        itself — narration keeps playing normally underneath. A hold_s=0
+        call (the common case — narration/filler/answer context switches,
+        _set_body_state()) is silently ignored while a previous hold is
+        still active, rather than cutting the held glance short; the next
+        such call after the hold expires goes through normally, which in
+        practice is the following utterance's own on_utterance_start."""
+        now = time.monotonic()
+        if hold_s > 0:
+            self._desired_gaze = target
+            self._gaze_hold_until = now + hold_s
+            self._reconcile_gaze()
+            return
+        if now < self._gaze_hold_until:
+            return
         self._desired_gaze = target
         self._reconcile_gaze()
 
@@ -130,8 +171,22 @@ class Scheduler:
             # (e.g. sitting in CHECKPOINT/PAUSED, no utterance-start events
             # to trigger it otherwise).
             self._reconcile_gaze()
+            self._maybe_scan_class()
             if self._playback.is_playing():
                 self._fire_gesture()
+
+    def _maybe_scan_class(self) -> None:
+        # Only nudges when we're already *supposed* to be looking at the
+        # class in some form -- never overrides a deliberate "slides"
+        # glance (the slide-change cue, or an in-flight point_slide/
+        # explain_open gesture carrying its own head keyframe -- that
+        # case is already excluded since a gesture in flight means
+        # _desired_gaze wasn't reconciled to a class variant yet, or the
+        # gesture's own end will trigger the next reconciliation).
+        if self._desired_gaze not in _CLASS_GAZE_VARIANTS:
+            return
+        choices = [g for g in _CLASS_GAZE_VARIANTS if g != self._desired_gaze]
+        self.set_gaze(random.choice(choices))
 
     def _fire_gesture(self) -> None:
         if self._body.is_gesturing():

@@ -271,9 +271,26 @@ class Orchestrator:
             section = self._script.sections[self.position]
 
             if not self._slides_broken and section.slide_index != self._last_slide_index:
+                # The very first slide of the lecture already gets its
+                # own gaze-at-slides moment from point_slide's one-shot
+                # intro gesture (this loop's position==0 check below) --
+                # firing the glance here too would be redundant on top of
+                # that gesture's own head keyframes.
+                is_first_slide = self._last_slide_index is None
                 try:
                     await self._loop.run_in_executor(None, self._slides.goto, section.slide_index)
                     self._last_slide_index = section.slide_index
+                    if not is_first_slide:
+                        # Brief glance at the new slide (user-tuned
+                        # 2026-08-05, gestures.slide_glance_hold_s),
+                        # concurrent with narration below — hold_s keeps
+                        # it from being reconciled away the instant the
+                        # new section's first utterance starts (narration's
+                        # own gaze context is "class" by default now —
+                        # scheduler.py's _CONTEXTS), without delaying
+                        # narration itself. Not fired from the except
+                        # branch — a fault isn't a real slide change.
+                        self._set_gaze("slides", hold_s=cfg.gestures.slide_glance_hold_s)
                 except SlideControllerError as e:
                     # _last_slide_index is set to the target *before* the
                     # fault resolves — it's what "Reopen deck" goes back to
@@ -283,6 +300,20 @@ class Orchestrator:
                     self._slides_broken = resolution == "resume_without_slides"
 
             self.current_section_text = section.text
+            if self.position == 0 and self._body is not None:
+                # One-shot intro cue (user-requested 2026-08-05): point at
+                # the slides during the lecture's very first line,
+                # introducing the topic. point_slide is already in the
+                # scheduler's own narration-context pool (scheduler.py's
+                # _CONTEXTS), so without this it only had a 1-in-3 random
+                # chance of landing on the opening line by luck. Fired
+                # directly, same non-blocking pattern as the hello wave in
+                # _body_lecture_start() — is_gesturing() is already true by
+                # the time this same utterance's on_utterance_start reaches
+                # the scheduler's own _fire_gesture(), so its random pick
+                # naturally no-ops instead of colliding (§12.4.1's "one
+                # gesture at a time" gate, not a new mechanism).
+                self._body.gesture("point_slide")
             await self._speak(section.text)
 
             is_last_section = self.position + 1 >= len(self._script.sections)
@@ -311,9 +342,16 @@ class Orchestrator:
                     if llm_ok:
                         await self._drain_queue(section)  # always ends back in NARRATING
                         if is_last_section:
+                            # _body_lecture_end() first, FINISHED after —
+                            # FINISHED's LED pattern is "off" (_LED_PATTERNS),
+                            # and _body_lecture_end() runs the real goodbye
+                            # wave+speech for several more seconds. Setting
+                            # FINISHED first went dark mid-farewell — found
+                            # live 2026-08-05 ("LEDs went off too soon,
+                            # before he finished").
+                            await self._body_lecture_end()
                             self.state.transition(LectureState.FINISHED)
                             self._set_body_state(LectureState.FINISHED)
-                            await self._body_lecture_end()
                             self.position += 1
                             return
                     else:
@@ -329,9 +367,12 @@ class Orchestrator:
 
             self.position += 1
 
+        # Same ordering fix as the is_last_section branch above: run the
+        # real goodbye wave+speech before flipping LEDs to FINISHED's
+        # "off" pattern, not before.
+        await self._body_lecture_end()
         self.state.transition(LectureState.FINISHED)
         self._set_body_state(LectureState.FINISHED)
-        await self._body_lecture_end()
 
     async def _handle_slide_fault(self, message: str) -> str:
         """A COM fault from either open() or goto() (§6.4) — the orchestrator
@@ -459,16 +500,19 @@ class Orchestrator:
         self.fault_message = message
         print(f"[FAULT] {message}")  # operator console alert lands in Phase 5
 
-    def _set_gaze(self, target: str) -> None:
+    def _set_gaze(self, target: str, hold_s: float = 0.0) -> None:
         """Every gaze() call in this class goes through here, not
         self._body.gaze() directly — the scheduler is the single owner of
         gaze so a change requested while a head-moving gesture is in
         flight is postponed and retried rather than silently colliding
         with it (see Scheduler.set_gaze()). Falls back to a direct call
         only if there's genuinely no scheduler (body without gestures
-        enabled) — main.py always builds them as a pair otherwise."""
+        enabled) — main.py always builds them as a pair otherwise.
+        hold_s: see Scheduler.set_gaze(); ignored in the no-scheduler
+        fallback since holding only means anything against the
+        scheduler's own reconciliation."""
         if self._scheduler is not None:
-            self._scheduler.set_gaze(target)
+            self._scheduler.set_gaze(target, hold_s=hold_s)
         elif self._body is not None:
             self._body.gaze(target)
 
@@ -552,6 +596,13 @@ class Orchestrator:
                 await asyncio.sleep(0.1)
                 elapsed += 0.1
             assert self._loop is not None
+            # NAOqi's own rest() (Body.sleep()) was tried in its place
+            # 2026-08-05 and reverted the same day: confirmed live twice
+            # (once standalone, once in this exact flow) that from a
+            # seated posture it reaches the identical released-stiffness
+            # end state as this call, just ~5s slower — no visible
+            # crouch/repositioning benefit on this robot to justify the
+            # extra wait.
             await self._loop.run_in_executor(None, self._body.stiffness, False)
 
     # ---- Q&A (§6.3, §7) ---------------------------------------------
@@ -825,6 +876,14 @@ class Orchestrator:
         process. A fresh one replaces it each time _wait_for_start()
         actually begins a new lecture."""
         return self._transcript
+
+    @property
+    def body(self) -> Body | None:
+        """The configured Body (§10.1 component health) — None unless
+        content/gestures.yaml is real (main.py). Read-only access for
+        routes_operator.py's health check; nothing else should reach
+        into this from outside the class."""
+        return self._body
 
     def snapshot(self) -> dict:
         """Everything the operator console's display needs in one shot —

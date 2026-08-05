@@ -148,11 +148,18 @@ async def _health(request: Request) -> dict:
     powerpoint = "down" if orchestrator.fault_message else "ok"
 
     if cfg.body == "nao" or cfg.audio_output == "nao":
-        # Phase 6 — the bridge's /health endpoint isn't wired up yet
-        # (nao_bridge/ doesn't exist until the robot is physically present,
-        # per CLAUDE.md). Reporting "down" here would be misleading (there's
-        # nothing actually failing) and "ok" would be a lie.
-        nao = "unknown"
+        # Phase 6 live bring-up (2026-08-05) — the bridge's /health is
+        # real now (nao_bridge/bridge.py, deployed and running on the
+        # robot); NaoBody.is_available() already calls it. This used to
+        # hardcode "unknown" from back when the bridge didn't exist yet
+        # — stale since Phase 6 landed, found live while reviewing the
+        # operator console mid-session.
+        body = orchestrator.body
+        if body is None:
+            nao = "unknown"
+        else:
+            nao_ok = await loop.run_in_executor(None, body.is_available)
+            nao = "ok" if nao_ok else "down"
     else:
         nao = "n/a"
 

@@ -21,7 +21,19 @@ rest:
 
 wave:
   contexts: [greeting]
-  duration_s: 2.36
+  # duration_s is NOT Choregraphe's frame timing here (that was 2.36, ie.
+  # 61 frames @ 25fps) -- it's a fitted value so NaoBody.is_gesturing()'s
+  # duration_s * 1.5 safety-margin formula lands close to the *measured*
+  # real execution time on hardware at speed 0.30 (~5s, timed live
+  # 2026-08-05, standalone /gesture firing, not the authored/simulated
+  # time) plus ~2s of slack, ie. 4.67 * 1.5 ~= 7.0s total before
+  # _body_lecture_end()'s goodbye poll allows stiffness(False). Real
+  # motion is speed-capped, not keyframe-timed (see nao_body.py's own
+  # comment on _DURATION_SAFETY_MARGIN) -- Choregraphe's number was never
+  # a real estimate of this, it just happened to go uncorrected until the
+  # goodbye wave was live-observed being cut off mid-motion by a premature
+  # stiffness(False).
+  duration_s: 4.67
   speed: 0.30
   keyframes:
     - t: 0.0
@@ -527,5 +539,18 @@ acknowledge:
       RWristYaw: -0.028187
 
 gaze:
-  slides: { HeadYaw: 0.45, HeadPitch: -0.15 }   # toward projector (NAO's left)
+  # Matches point_slide's own held pointing-pose head angles exactly
+  # (its t=0.56..2.36 keyframes) -- user-requested 2026-08-05, so the
+  # slide-change glance looks at the same spot point_slide's arm points
+  # to, not an independently-guessed angle. Head-only, on purpose: this
+  # is gaze() (HeadYaw/HeadPitch alone), not the whole point_slide
+  # gesture -- no arm movement here, just where the head turns.
+  slides: { HeadYaw: 0.834267, HeadPitch: -0.342085 }
   class:  { HeadYaw: 0.00, HeadPitch: 0.00 }    # level, forward
+  # Small casual scanning offsets either side of center (user-requested
+  # 2026-08-05, so NAO's "looking at the class" default doesn't read as a
+  # single fixed stare) -- 0.3 rad =~ 17 degrees, modest and well inside
+  # HeadYaw's physical range. Cycled by Scheduler's own periodic tick, not
+  # a new timer -- see scheduler.py's _CLASS_GAZE_VARIANTS.
+  class_left:  { HeadYaw: 0.30, HeadPitch: 0.00 }
+  class_right: { HeadYaw: -0.30, HeadPitch: 0.00 }

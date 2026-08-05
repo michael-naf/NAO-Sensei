@@ -30,6 +30,22 @@ class NaoBody:
         self._library = library
         self._client = httpx.Client(base_url=cfg.nao.bridge_url)
         self._gesture_until = 0.0
+        # leds() needs strict ordering that gesture()/gaze() don't --
+        # those are transient/cosmetic and tolerate reordering, but LEDs
+        # are meant to always reflect *current* orchestrator state.
+        # _fire()'s one-thread-per-call pattern gave no ordering guarantee
+        # between calls issued microseconds apart (e.g. CHECKPOINT's
+        # green immediately followed by NARRATING's white when the queue
+        # is empty) -- found live 2026-08-05: the eyes got stuck green
+        # for extended stretches whenever the later "revert to white"
+        # request happened to land at the bridge before the earlier
+        # "green" one. A single worker thread that always sends the
+        # *latest* requested pattern (coalescing anything superseded
+        # before it was sent) fixes this without blocking the event loop.
+        self._led_lock = threading.Lock()
+        self._led_pending: str | None = None
+        self._led_wakeup = threading.Event()
+        threading.Thread(target=self._led_worker, daemon=True).start()
 
     def gesture(self, name: str) -> None:
         # Non-blocking per the Body protocol's own contract — fired from a
@@ -55,7 +71,23 @@ class NaoBody:
         self._fire(f"gaze {target!r}", "/gaze", body, cfg.nao.timeouts.motion_s)
 
     def leds(self, pattern: str) -> None:
-        self._fire(f"leds {pattern!r}", "/leds", {"pattern": pattern}, cfg.nao.timeouts.motion_s)
+        with self._led_lock:
+            self._led_pending = pattern
+        self._led_wakeup.set()
+
+    def _led_worker(self) -> None:
+        while True:
+            self._led_wakeup.wait()
+            with self._led_lock:
+                pattern = self._led_pending
+                self._led_pending = None
+                self._led_wakeup.clear()
+            if pattern is None:
+                continue
+            try:
+                self._post_sync("/leds", {"pattern": pattern}, cfg.nao.timeouts.motion_s)
+            except httpx.HTTPError as e:
+                print(f"[NAO] leds {pattern!r} failed: {e!r}")
 
     def posture(self, name: str) -> None:
         # Genuinely blocking (real motion, up to nao.timeouts.posture_s) —
