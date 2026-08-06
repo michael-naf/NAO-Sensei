@@ -18,7 +18,19 @@ from app.config import cfg
 # robot is still finishing the last one. Exact once real timing can be
 # watched and tuned (Phase 7); there is no live "still moving" query to
 # ask the bridge instead (see is_gesturing()'s own note).
-_DURATION_SAFETY_MARGIN = 1.5
+#
+# 1.5 was demonstrably not enough for wave at its tuned speed (real
+# measured duration was ~5s against a 2.36s-authored/1.5x-padded estimate
+# of ~3.5s — see gestures.yaml's own duration_s override for wave) — fixed
+# there by hardcoding a measured value, but the other five gestures
+# (point_slide/explain_open/beat/thinking/acknowledge) still only have
+# their Choregraphe-authored duration_s, never re-measured on hardware.
+# Found live 2026-08-06: the goodbye wave fired while a narration gesture
+# was still physically executing — two moves at once. Bumped 1.5 -> 2.0 as
+# blanket insurance until each gesture's duration_s gets the same
+# hardware-measured treatment wave already got; this alone doesn't
+# guarantee correctness, just widens the margin for error.
+_DURATION_SAFETY_MARGIN = 2.0
 
 
 class NaoBody:
@@ -110,6 +122,12 @@ class NaoBody:
 
     def stiffness(self, on: bool) -> None:
         self._post_sync("/stiffness", {"on": on}, cfg.nao.timeouts.posture_s)
+
+    def volume(self, level: int) -> None:
+        # Fire-and-forget, same as gesture()/gaze()/leds() — specs.md's
+        # failure table groups /volume with those three (logged and
+        # swallowed), not with posture/stiffness (fail loudly).
+        self._fire(f"volume {level}", "/volume", {"level": level}, cfg.nao.timeouts.motion_s)
 
     def is_gesturing(self) -> bool:
         # No live query exists for "is a gesture still physically running"

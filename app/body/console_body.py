@@ -39,6 +39,9 @@ class ConsoleBody:
     def stiffness(self, on: bool) -> None:
         print(f"[BODY] stiffness={'on' if on else 'off'}")
 
+    def volume(self, level: int) -> None:
+        print(f"[BODY] volume={level}")
+
     def is_gesturing(self) -> bool:
         return time.monotonic() < self._gesture_until
 

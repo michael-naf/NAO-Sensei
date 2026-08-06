@@ -72,9 +72,10 @@ def print_qr(url: str) -> None:
         # print_ascii() writes Unicode block characters; Windows consoles
         # default to a codepage (cp1252) that can't encode them, which
         # raised UnicodeEncodeError and would otherwise crash the whole
-        # startup sequence over a display nicety. The URL itself — the part
-        # that actually matters for connecting — is printed either way.
+        # startup sequence over a display nicety. The caller already prints
+        # the URL as plain text before calling this — only repeat it here
+        # if the QR itself couldn't be rendered, or it's a needless dupe.
         qr.print_ascii(invert=True)
     except UnicodeEncodeError:
-        print("(QR code not renderable in this console — use the URL below)")
-    print(url)
+        print("(QR code not renderable in this console — use the URL above)")
+        print(url)

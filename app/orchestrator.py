@@ -84,6 +84,18 @@ class Orchestrator:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._own_task: asyncio.Task | None = None
         self._exit_requested = False  # operator "Exit" — see request_exit()
+        # Set the instant end_lecture()/request_exit() first cancels
+        # run()'s task, cleared once the next lecture actually starts (or
+        # never, on Exit, since the process exits). Guards every other
+        # operator control — including a second End lecture/Exit click —
+        # against firing while _end_lecture_shutdown() is still mid-flight.
+        # Without this, a second cancel() lands on the SAME task while it's
+        # already inside run()'s except-CancelledError handler (e.g. during
+        # the ~7s goodbye wave+speech), raising a second CancelledError
+        # that nothing catches — it propagates out of run() uncaught and
+        # crashes the whole process. Found live 2026-08-06: End lecture
+        # clicked a second time while the first was still tearing down.
+        self._shutdown_in_progress = False
         self._idle_event: asyncio.Event | None = None
         self._start_event: asyncio.Event | None = None
         self._skip_event: asyncio.Event | None = None  # operator "Skip question" — see skip_question()
@@ -219,6 +231,7 @@ class Orchestrator:
         self.current_answer = None
         self.fault_message = None
         self.qa_disabled = False
+        self._shutdown_in_progress = False
         assert self._paused_event is not None
         self._paused_event.set()
 
@@ -420,6 +433,18 @@ class Orchestrator:
         raises CancelledError, so this never double-runs against it."""
         assert self._loop is not None
         self._playback.stop_now()
+        # If this shutdown was triggered from PAUSED, pause() had cleared
+        # PlaybackQueue's resume_event (stop_after_current()) and nothing
+        # since has set it — _body_lecture_end()'s goodbye line would enqueue
+        # onto a queue whose play thread is permanently parked on
+        # resume_event.wait(), so _wait_until_played() never returns and
+        # this hangs forever (found live: End lecture/Exit called while
+        # PAUSED never completed, force-killed after 20+s with the server
+        # otherwise still responsive). stop_now() first (flushes/stops while
+        # the play thread is still parked, so nothing stale from before the
+        # pause gets a chance to play), *then* resume(), so the goodbye
+        # utterance enqueued below actually gets picked up.
+        self._playback.resume()
         await self._body_lecture_end()
         try:
             await self._loop.run_in_executor(None, self._slides.close)
@@ -434,6 +459,17 @@ class Orchestrator:
     async def _speak(self, text: str) -> None:
         assert self._loop is not None and self._idle_event is not None
         self._idle_event.clear()
+        # Captured once, before synthesis starts — not re-read at enqueue
+        # time. Synthesis below can take real wall-clock time (a whole
+        # section, before anything is enqueued), and skip_section() bumps
+        # self._turn_id + flushes the moment it's clicked. Reading
+        # self._turn_id at enqueue time would stamp these utterances with
+        # whatever turn_id skip_section() had already bumped to — which its
+        # own flush() had just whitelisted — silently defeating the skip
+        # (found live: skip section appeared to do nothing until the
+        # section finished on its own). Same fix as _answer_question()'s
+        # my_turn_id, applied here for the same reason.
+        my_turn_id = self._turn_id
 
         # Synthesize the whole section before enqueuing any of it. Piper
         # synthesis is CPU-bound; interleaving it with playback (as before)
@@ -448,7 +484,7 @@ class Orchestrator:
 
         for seq, wav_path in enumerate(wav_paths):
             self._playback.enqueue(
-                Utterance(turn_id=self._turn_id, seq=seq, wav_path=wav_path, kind="narration")
+                Utterance(turn_id=my_turn_id, seq=seq, wav_path=wav_path, kind="narration")
             )
 
         await self._idle_event.wait()
@@ -543,6 +579,10 @@ class Orchestrator:
             # pushes, the HTTP server, everything — for that long. Routed
             # through the executor like every other genuinely-blocking call
             # in this file (TTS synthesis, slide COM, LLM reachability).
+            # §12.5 lecture-start sequence: volume, then posture, then
+            # stiffness. volume() is non-blocking (Body protocol contract,
+            # like gesture/gaze/leds) so it isn't run_in_executor'd.
+            self._body.volume(cfg.nao.volume)
             await self._loop.run_in_executor(None, self._body.posture, "Sit")
             await self._loop.run_in_executor(None, self._body.stiffness, True)
             # Fired *before* scheduler.start(), so the scheduler's
@@ -567,20 +607,26 @@ class Orchestrator:
         if self._scheduler is not None:
             self._scheduler.stop()
         if self._body is not None:
-            # A head-moving gesture (point_slide/thinking/acknowledge)
-            # fired moments before the lecture ended can still be
-            # physically in flight — scheduler.stop() only stops *future*
-            # picks, not one already underway, and unlike mid-lecture
-            # there's no *next* utterance/tick left to retry a postponed
-            # gaze on, so this is the one place that still waits it out
-            # explicitly (capped, same pattern as the wave-completion wait
-            # below) rather than trusting a later reconciliation.
+            # A narration gesture (point_slide/explain_open/beat/thinking/
+            # acknowledge) fired moments before the lecture ended can still
+            # be physically in flight — scheduler.stop() only stops
+            # *future* picks, not one already underway. Wait on
+            # is_gesturing() directly (the same general "is anything
+            # currently in flight" flag _fire_gesture() itself checks
+            # before firing anything new), not the narrower
+            # head_owned_by_gesture() (which also requires the in-flight
+            # gesture to touch the head — that's the right check for
+            # postponing a *gaze* change, the wrong one for "is it safe to
+            # fire wave on top of this"). Found live 2026-08-06: NAO fired
+            # the goodbye wave while a narration gesture was still
+            # physically executing — two moves at once. is_gesturing()'s
+            # own duration estimate can itself run short (already confirmed
+            # for wave — see its duration_s override in gestures.yaml — and
+            # not yet re-measured on hardware for the others), so this
+            # wait is best-effort insurance, not a guarantee; capped so a
+            # stuck estimate can never hang shutdown indefinitely.
             elapsed = 0.0
-            while (
-                self._scheduler is not None
-                and self._scheduler.head_owned_by_gesture()
-                and elapsed < 5.0
-            ):
+            while self._body.is_gesturing() and elapsed < 5.0:
                 await asyncio.sleep(0.1)
                 elapsed += 0.1
             self._set_gaze("class")
@@ -932,6 +978,8 @@ class Orchestrator:
         is the correct way back. stop_after_current() leaves everything
         already queued untouched, so resume() picks up exactly where it
         left off with no re-synthesis or re-goto needed."""
+        if self._shutdown_in_progress:
+            return False
         if self.state.state not in (LectureState.NARRATING, LectureState.CHECKPOINT, LectureState.ANSWERING):
             return False
         self._playback.stop_after_current()
@@ -943,6 +991,8 @@ class Orchestrator:
         return True
 
     def resume(self) -> bool:
+        if self._shutdown_in_progress:
+            return False
         if self.state.state != LectureState.PAUSED or self.fault_message is not None:
             return False
         self.state.resume_from_pause()
@@ -966,6 +1016,8 @@ class Orchestrator:
         internal queues, which fires on_idle, which is exactly what
         _speak() is awaiting — the loop then falls through to the
         checkpoint/advance logic on its own, with the queue already empty."""
+        if self._shutdown_in_progress:
+            return False
         if self.state.state not in (LectureState.NARRATING, LectureState.CHECKPOINT):
             return False
         self._turn_id += 1
@@ -983,6 +1035,8 @@ class Orchestrator:
         stream and the audio, and let _answer_question's own skip-awareness
         unwind cleanly (see there) rather than reaching into _run_turn from
         the outside."""
+        if self._shutdown_in_progress:
+            return False
         if self.state.state != LectureState.ANSWERING:
             return False
         if self._awaiting_future is not None and not self._awaiting_future.done():
@@ -1000,6 +1054,8 @@ class Orchestrator:
         """Operator Clear queue (§10.2) — drops all *waiting* students, who
         are notified. The active turn (already popped off the queue)
         completes normally; use Skip question to end that one instead."""
+        if self._shutdown_in_progress:
+            return False
         if self._queue.is_empty():
             return False
         self._clear_queue_and_notify()
@@ -1023,6 +1079,8 @@ class Orchestrator:
         return self._resolve_fault("resume_without_slides")
 
     def _resolve_fault(self, resolution: str) -> bool:
+        if self._shutdown_in_progress:
+            return False
         if self._fault_future is None or self._fault_future.done():
             return False
         self._fault_future.set_result(resolution)
@@ -1036,9 +1094,21 @@ class Orchestrator:
         site individually). llm.cancel() is a best-effort head start on the
         one case — an in-flight LLM stream — that cancellation alone
         wouldn't interrupt promptly, since it's driven from a blocking
-        executor call that only notices cancellation between chunks."""
+        executor call that only notices cancellation between chunks.
+
+        Guarded against a second call landing while the first is still
+        tearing down (self._shutdown_in_progress) — _end_lecture_shutdown()
+        takes several real seconds (the goodbye wave+speech), and state
+        doesn't reach IDLE until it's done, so the state-based guard above
+        alone doesn't catch a double-click during that window. A second
+        .cancel() on the same task there raises a second CancelledError
+        that nothing catches, crashing the whole process — found live
+        2026-08-06 from a real double End-lecture click."""
         if self._own_task is None or self.state.state in (LectureState.IDLE, LectureState.FINISHED):
             return False
+        if self._shutdown_in_progress:
+            return False
+        self._shutdown_in_progress = True
         llm.cancel()
         self._own_task.cancel()
         return True
@@ -1054,9 +1124,18 @@ class Orchestrator:
         process. Unlike end_lecture(), this works from *any* state
         including IDLE/READY — run() is always blocked somewhere (waiting
         for Start, narrating, or paused) once it has started, so there's
-        always something to cancel."""
+        always something to cancel.
+
+        Guarded against a second call (from Exit or End lecture) landing
+        while a shutdown is already in progress — see end_lecture()'s own
+        docstring for why a double-cancel on the same task crashes the
+        process. If End lecture was already clicked, Exit is rejected too
+        until that re-arms back to READY; click Exit again from there."""
         if self._own_task is None:
             return False
+        if self._shutdown_in_progress:
+            return False
+        self._shutdown_in_progress = True
         self._exit_requested = True
         llm.cancel()
         self._own_task.cancel()
