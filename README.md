@@ -243,12 +243,30 @@ All settings live in two files — **nothing is hardcoded in the source**:
 
 | File | What it holds | Committed? |
 |---|---|---|
-| [`config.yaml`](config.yaml) | Every application setting — audio/body targets, the LLM model, timings, the projector monitor index, the operator token, the robot address, and more. | ✅ Yes |
-| `.env` | Machine-specific paths used **only** by the one-click startup script (your Python interpreter, the robot's address, your SSH key). Copy it from [`.env.example`](.env.example). | ❌ No — git-ignored |
+| [`config.yaml`](config.yaml) | Every application setting (see below). | ✅ Yes |
+| `.env` | Machine-specific paths for the **one-click startup script only** — your Python interpreter, the robot's address, your SSH key. Copy it from [`.env.example`](.env.example). | ❌ No — git-ignored |
+
+**What's inside `config.yaml`** — one commented file that groups all the knobs. You rarely
+need to touch most of them:
+
+| Section | What it controls |
+|---|---|
+| `audio_output` / `body` | Whether output goes to the **PC** or a **real NAO robot**. |
+| `llm` | The language model and how answers are generated. |
+| `tts` / `stt` | The voice (text-to-speech) and speech recognition. |
+| `slides` | **Which screen** the slideshow appears on (see note below). |
+| `server` | The web server, the phone tunnel, and the operator password. |
+| `timings` / `gestures` / `nao` | Pacing, robot gestures, and the robot's address & volume. |
 
 The shipped defaults run **without a robot** (`audio_output: pc`, `body: console`). Set both
 to `nao` to drive a real NAO V5. Before any real demo, also set a real `server.operator_token`
 and a room-appropriate `nao.volume`.
+
+> 🖥️ **Which screen shows the slides.** PowerPoint displays the slideshow on the monitor set
+> by `slides.display` in `config.yaml`: `1` is your primary screen, `2` a second monitor or
+> projector, and so on. The default is `2` (a projector). **If you only have one screen, set
+> it to `1`** — otherwise the app stops at startup with a clear *"only N monitor(s) connected"*
+> message.
 
 ---
 
@@ -301,33 +319,33 @@ The top-level map:
 
 | Path | What lives here |
 |---|---|
-| `app/` | The PC application (Python 3.11). The lecture runs as one asyncio coroutine. |
-| `nao_bridge/` | A tiny HTTP server that runs **on the robot** (Python 2.7). Never imported by `app/`. |
-| `content/` | The authored lecture: slides + speaker notes, Q&A material, and the gesture library. |
-| `tests/` | Unit tests. |
-| `voices/` | The Piper voice model (downloaded, not committed). |
+| `app/` | The main program that runs on the PC — the "brains" of the whole system. |
+| `nao_bridge/` | A small program that runs **on the robot** and just relays commands to it. |
+| `content/` | The lecture itself: the slides, the speaker notes, the Q&A facts, and the robot's gestures. |
+| `tests/` | Automated checks. |
+| `voices/` | The downloaded voice file (not included — you fetch it during setup). |
 
-Inside `app/`:
+Inside `app/`, in plain terms:
 
 ```
 app/
-├── main.py            # Entry point (default run + --validate)
-├── config.py          # Loads config.yaml into a typed object
-├── orchestrator.py    # The lecture loop, written as a readable coroutine
-├── state.py           # Lecture state machine
-├── script_parser.py   # .pptx speaker notes → lecture script (+ validation)
-├── slides.py          # PowerPoint control (its own COM thread)
-├── queue.py           # The student question queue
-├── transcript.py      # Per-lecture transcript writer
-├── audio/             # AudioSink seam: PC / NAO output + gapless playback
-├── body/              # Body seam: gesture library, scheduler, console / NAO body
-├── services/          # tts · stt · llm · sentence splitting · moderation
-├── web/               # FastAPI server, student + operator pages, phone tunnel
-└── prompts/           # Q&A system prompt + spoken filler lines
+├── main.py            # Starts everything up
+├── config.py          # Reads the settings from config.yaml
+├── orchestrator.py    # Runs the lecture from start to finish
+├── state.py           # Keeps track of what's happening right now
+├── script_parser.py   # Reads the speaker notes out of the slides
+├── slides.py          # Opens PowerPoint and advances the slides
+├── queue.py           # The line of student questions waiting to be answered
+├── transcript.py      # Saves a written record of each lecture
+├── audio/             # Turns text into speech and plays it out loud
+├── body/              # The robot's gestures, gaze, and eye lights
+├── services/          # The AI parts: hearing, answering, and speaking
+├── web/               # The students' phone page and the operator's control page
+└── prompts/           # The wording the robot uses when it answers
 ```
 
-The `logs/`, `sessions/`, and `runtime/audio/` folders exist in the repo, but their generated
-contents are intentionally not committed.
+The `logs/`, `sessions/`, and `runtime/audio/` folders are kept in the repo, but the files
+they fill up with while running are not.
 
 ---
 
