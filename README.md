@@ -405,8 +405,7 @@ This project builds on excellent open-source work — each retains its own licen
 - **Michael Naftalishen**
 - **Yossef Okropiridze**
 
-Developed for a university course on software development for human–robot interaction with a
-humanoid robot.
+Developed as part of a course on software development for human–robot interaction with a humanoid robot.
 
 ## 📄 License
 
