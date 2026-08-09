@@ -382,7 +382,6 @@ inference. In the default typed-only mode the system is fully offline. See `spec
 |---|---|
 | [`specs.md`](specs.md) | The authoritative technical specification (v2.2) — requirements, architecture, every seam and safety guarantee. |
 | [`implementationPlan.md`](implementationPlan.md) | The phased, checkpoint-gated build plan the project was implemented against. |
-| [`CLAUDE.md`](CLAUDE.md) | The developer log — working rules and a session-by-session account of what was built, tested on hardware, and fixed. |
 
 ---
 

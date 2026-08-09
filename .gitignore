@@ -27,3 +27,6 @@ voices/
 # ── Local-only working directories ─────────────────────────────────────
 .claude/
 NAO-Video/
+
+# Developer log — kept locally, not published
+CLAUDE.md
