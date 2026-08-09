@@ -5,20 +5,42 @@
 # Run via start_nao_sensei.bat (double-click it), or directly:
 #   powershell -ExecutionPolicy Bypass -File start_nao_sensei.ps1
 #
-# Update the values below if they ever change (see CLAUDE.md's
-# "Environment" table and "Phase 6 live bring-up" section for why each one
-# is what it is):
-#   - NaoIp is NAO's link-local address over the direct Ethernet cable.
-#     It can change if the cable is ever unplugged/replugged - re-verify
-#     with "ping 169.254.242.9" first if this script starts failing at the
-#     "NAO bridge" step.
-#   - PythonExe is the nao-sensei conda env's interpreter, not a venv.
+# Machine-specific values live in a git-ignored ".env" file, NOT in this
+# script - so nobody's personal paths end up in version control. Copy
+# ".env.example" to ".env" and fill in your own values before first use:
+#   - NAO_SENSEI_PYTHON: the project env's python.exe (conda env or venv).
+#   - NAO_IP: NAO's link-local address over the direct Ethernet cable. It can
+#     change if the cable is unplugged/replugged - re-verify with "ping" if
+#     this script starts failing at the "NAO bridge" step.
+#   - NAO_SSH_KEY: the RSA private key authorized on the robot.
 
-$RepoRoot        = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonExe       = "D:\anaconda3\envs\nao-sensei\python.exe"
-$NaoIp           = "169.254.242.9"
+$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Minimal .env reader: KEY=VALUE lines, "#" comments, %ENVVARS% expanded.
+function Get-DotEnv {
+    param([string]$Key, [string]$Default)
+    $envFile = "$RepoRoot\.env"
+    if (Test-Path $envFile) {
+        foreach ($line in Get-Content $envFile) {
+            if ($line -match '^\s*#') { continue }
+            if ($line -match "^\s*$Key\s*=\s*(.+?)\s*$") {
+                return [Environment]::ExpandEnvironmentVariables($Matches[1].Trim('"'))
+            }
+        }
+    }
+    return $Default
+}
+
+if (-not (Test-Path "$RepoRoot\.env")) {
+    Write-Host "  ERROR: no .env file found. Copy .env.example to .env and set your" -ForegroundColor Red
+    Write-Host "         machine paths first (see the README 'Configuration' section)." -ForegroundColor Red
+    exit 1
+}
+
+$PythonExe       = Get-DotEnv -Key "NAO_SENSEI_PYTHON" -Default ""
+$NaoIp           = Get-DotEnv -Key "NAO_IP"            -Default "169.254.242.9"
+$SshKey          = Get-DotEnv -Key "NAO_SSH_KEY"       -Default "$env:USERPROFILE\.ssh\id_rsa_nao"
 $NaoUser         = "nao"
-$SshKey          = "$env:USERPROFILE\.ssh\id_rsa_nao"
 $BridgeRemoteDir = "/home/nao/bridge"
 $BridgePort      = 8765
 
@@ -74,8 +96,11 @@ function Get-ConfigValue {
 
 Write-Host "=== NAO Sensei - full system startup ===" -ForegroundColor Yellow
 
+if (-not $PythonExe) {
+    Fail "NAO_SENSEI_PYTHON is not set in .env - see .env.example."
+}
 if (-not (Test-Path $PythonExe)) {
-    Fail "python.exe not found at $PythonExe - update PythonExe in this script."
+    Fail "python.exe not found at $PythonExe - fix NAO_SENSEI_PYTHON in .env."
 }
 if (-not (Test-Path $SshKey)) {
     Fail "SSH key not found at $SshKey - see CLAUDE.md's SSH note."

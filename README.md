@@ -1,7 +1,7 @@
 <h1 align="center">🤖 NAO Sensei</h1>
 
 <p align="center">
-  <em>A NAO V5 humanoid robot that delivers a real lecture — narrates its own slides, and answers student questions live.</em>
+  <em>A NAO V5 humanoid robot that delivers a real lecture — it narrates its own slides and answers student questions live.</em>
 </p>
 
 <p align="center">
@@ -23,6 +23,25 @@
 
 ---
 
+## Table of contents
+
+- [What it is](#what-it-is)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+  - [1. Prerequisites](#1-prerequisites)
+  - [2. Installation](#2-installation)
+  - [3. Configuration](#3-configuration)
+- [Running a lecture](#running-a-lecture)
+- [Testing](#testing)
+- [Project structure](#project-structure)
+- [Design & safety notes](#design--safety-notes)
+- [Documentation](#documentation)
+- [Authors](#authors)
+- [License](#license)
+
+---
+
 ## What it is
 
 **NAO Sensei** is a human–robot interaction (HRI) system in which a **NAO V5** humanoid
@@ -35,15 +54,30 @@ delivers a prepared PowerPoint lecture to a small class of students. The robot:
   material, never improvised.
 
 Students queue their questions from their **phones** (typed, or spoken via voice), and a
-human **operator** supervises the whole lecture from a browser console (pause, skip, end,
-recover from faults).
+human **operator** supervises the lecture from a browser console (pause, skip, end, recover
+from faults).
 
-Built as an MVP for a university HRI course. The guiding principle:
+It was built as an MVP for a university HRI course. The guiding principle:
 
 > **Brains on the PC, body in the robot.**
 > NAO V5 (an Intel Atom CPU) cannot run an LLM, speech recognition, or heavy processing.
 > All intelligence runs on a Windows PC; the robot receives only two kinds of command —
 > *play this audio* and *perform this gesture*. Everything else follows from that.
+
+---
+
+## Features
+
+- 🎙️ **Verbatim narration** of a real PowerPoint deck, with natural pacing and pauses.
+- 🖥️ **Self-advancing slides** projected on a second monitor, driven over COM.
+- 🙋 **Live student Q&A** at checkpoints — typed or spoken from any phone, no app install.
+- 🧠 **Grounded answers only** — a local LLM answers strictly from prepared material, with a
+  moderation guardrail; it never improvises facts.
+- 🤖 **Natural embodiment** — arm gestures, gaze, and eye-LED states, all safety-limited.
+- 🎛️ **Operator console** — pause, resume, skip, clear queue, end, and slide-fault recovery.
+- 🔒 **100% local inference** — speech, language, and voice all run on the PC; no cloud AI.
+- 🧪 **Runs without the robot** — a console/PC mode lets you develop and test end-to-end
+  before NAO is ever connected.
 
 ---
 
@@ -76,173 +110,204 @@ flowchart LR
     PPTX -->|"HDMI"| PROJ["📽️ Projector"]
 ```
 
-The two hardware targets (audio output, and the robot body) sit behind narrow interfaces
+The two hardware targets — audio output, and the robot body — sit behind narrow interfaces
 (`AudioSink`, `Body`). Swapping *PC speakers → NAO speakers*, or *console preview → real
-robot*, is a one-config-key change — no other module is touched. This is what lets the
-whole system be developed and tested on a PC before the robot is ever connected.
+robot*, is a **one-config-key change**; no other module is touched. That is what lets the
+whole system be built and tested on a PC before the robot is connected.
 
 ---
 
-## Repository layout
+## Getting started
 
-```
-NAO-SENSEI/
-├── app/                      # The PC application (Python 3.11, one asyncio event loop)
-│   ├── main.py               #   Entry point — default run mode + --validate flag
-│   ├── config.py             #   config.yaml → typed object; fails loudly on missing keys
-│   ├── orchestrator.py       #   The lecture loop, written as a readable coroutine
-│   ├── state.py              #   Lecture state machine and legal transitions
-│   ├── script_parser.py      #   .pptx speaker notes → LectureScript (+ validation)
-│   ├── queue.py              #   The student question queue
-│   ├── slides.py             #   PowerPoint slide controller + its dedicated COM thread
-│   ├── transcript.py         #   Per-lecture session transcript writer
-│   ├── audio/                #   AudioSink seam: pc_sink, nao_sink, gapless playback queue
-│   ├── body/                 #   Body seam: gesture library, scheduler, console_body, nao_body
-│   ├── services/             #   tts · stt · llm · sentence splitting · moderation
-│   ├── web/                  #   FastAPI server, student + operator routes, static pages, tunnel
-│   └── prompts/              #   Q&A system prompt + spoken filler lines
-│
-├── nao_bridge/               # Runs ON the robot (Python 2.7) — never imported by the app
-│   ├── bridge.py             #   Thin HTTP server: /play, /gesture, /gaze, /leds, /posture…
-│   ├── whitelist.py          #   Joint whitelist — structurally refuses any leg-joint command
-│   └── restart_bridge.sh     #   Redeploy/restart helper used by the startup script
-│
-├── content/                  # Authored lecture content (the robot performs, never improvises)
-│   ├── lecture.pptx          #   Slides + speaker notes (the verbatim narration script)
-│   ├── qa_material.md         #   Grounding source for question answers
-│   ├── gestures.yaml         #   Gesture library (joint keyframes), authored in Choregraphe
-│   └── behavior.xar          #   Choregraphe source for the gestures (not read at runtime)
-│
-├── tests/                    # Unit tests: sentence splitter, notes parser, joint whitelist
-├── config.yaml               # Every timing, limit, and path — nothing is hardcoded
-├── start_nao_sensei.bat      # One-click full-system startup (Ollama + bridge + app)
-├── start_nao_sensei.ps1      #   …its actual logic (PowerShell)
-│
-├── specs.md                  # Full technical specification (v2.2) — the authoritative design
-├── implementationPlan.md     # The phased, checkpoint-gated build plan
-└── CLAUDE.md                 # Developer log / working notes accumulated across build sessions
-```
+> **Platform note.** The application runs on **Windows** — it drives the PowerPoint desktop
+> app over COM. The physical robot is **optional**: the whole system runs in a console/PC
+> mode with no robot connected.
 
-Empty `logs/`, `sessions/`, `runtime/audio/`, and `voices/` folders are created on demand;
-their contents are generated at runtime and are intentionally **not** committed.
+### 1. Prerequisites
 
----
+Install these **before** the Python packages. They are not pip packages.
 
-## Prerequisites
+| Tool | Why it's needed | Required? |
+|---|---|---|
+| **[Python 3.11](https://www.python.org/downloads/)** | Runs the application. | Always |
+| **Microsoft PowerPoint** (desktop) | Displays and advances the slides (via COM). | Always |
+| **[Ollama](https://ollama.com)** | Runs the local LLM that answers questions. | Always |
+| **[ffmpeg + ffprobe](https://ffmpeg.org/download.html)** | Audio format conversion (on `PATH`). | Always |
+| **[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)** | HTTPS tunnel so phones can use the microphone. | Voice questions only |
+| **NAO V5 robot + [Choregraphe](https://www.aldebaran.com/en/support/nao-6/downloads-softwares)** | The physical robot and its gesture-authoring tool. | Physical robot only |
 
-The application runs on **Windows** (it drives PowerPoint over COM). The robot is optional —
-the whole system runs in a **console/PC mode** with no robot connected.
+A GPU with **~8 GB VRAM** is recommended so the LLM runs on the GPU (verify with `ollama ps`).
 
-| Requirement | Notes |
-|---|---|
-| **Python 3.11** | Developed under an Anaconda environment; a plain venv works too. |
-| **Microsoft PowerPoint** | Desktop app, COM-capable (drives the slideshow). |
-| **[Ollama](https://ollama.com)** | Local LLM runtime. Model used: `llama3.1:8b-instruct-q4_K_M`. |
-| **[Piper](https://github.com/OHF-Voice/piper1-gpl) voice** | `en_US-ryan-medium` (fetched on demand, see below). |
-| **ffmpeg / ffprobe** | On `PATH` (audio format conversion). |
-| **[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)** | *Only for voice questions* (Mode B). Typed-only mode needs no tunnel. |
-| **NAO V5 + bridge** | *Optional.* Only needed to run on the physical robot. |
-| GPU | ~8 GB VRAM recommended so the LLM runs on GPU (verify with `ollama ps`). |
-
----
-
-## Setup
+### 2. Installation
 
 ```bash
-# 1. Create and activate an environment (Python 3.11)
+# 1. Clone the repository
+git clone https://github.com/michael-naf/NAO-Sensei.git
+cd NAO-Sensei
+
+# 2. Create and activate a Python 3.11 environment
 conda create -n nao-sensei python=3.11
 conda activate nao-sensei
+#   (a plain venv works too: python -m venv .venv && .venv\Scripts\activate)
 
-# 2. Install Python dependencies
-pip install piper-tts soxr sounddevice numpy python-pptx pywin32 pyyaml \
-            fastapi "uvicorn[standard]" httpx "qrcode[pil]" faster-whisper \
-            python-multipart pytest
+# 3. Install the Python dependencies
+pip install -r requirements.txt
 
-# pywin32 needs a one-time COM registration step:
+# 4. One-time COM registration for pywin32
 python <path-to-site-packages>/pywin32_postinstall.py -install
+```
 
-# 3. Fetch the Piper voice model (~63 MB, not committed to the repo)
+**5. Download the text-to-speech voice model.** It is a large binary (~63 MB) and is *not*
+committed to the repo. Fetch it into the `voices/` folder:
+
+```bash
 python -m piper.download_voices --download-dir ./voices en_US-ryan-medium
+```
 
-# 4. Pull the LLM
+This creates the two files the app expects:
+
+```
+voices/
+├── en_US-ryan-medium.onnx        # the voice model
+└── en_US-ryan-medium.onnx.json   # its config
+```
+
+The voice name in `config.yaml` (`tts.voice`) must match these filenames.
+
+**6. Pull the language model** into Ollama:
+
+```bash
 ollama pull llama3.1:8b-instruct-q4_K_M
 ```
 
-Everything configurable lives in [`config.yaml`](config.yaml) — audio/body targets, timings,
-the projector monitor index, the LLM model, the operator token, and so on. **Nothing is
-hardcoded.** Before a real demo, set a real `server.operator_token` and a room-appropriate
-`nao.volume`.
+This must match `llm.model` in `config.yaml`.
+
+### 3. Configuration
+
+Two files hold all settings — **nothing is hardcoded in the source**:
+
+| File | What it holds | Committed? |
+|---|---|---|
+| [`config.yaml`](config.yaml) | Every application setting: the audio/body targets, the LLM model, timings, the projector monitor index, the operator token, the robot address, etc. | Yes |
+| `.env` | Machine-specific paths used **only** by the one-click startup script (your Python interpreter, the robot's address, your SSH key). | **No** — git-ignored |
+
+For the one-click script, copy the template and fill in your own paths:
+
+```bash
+copy .env.example .env       # Windows
+```
+
+Before a real demo, set a real `server.operator_token` and a room-appropriate `nao.volume`
+in `config.yaml`.
 
 ---
 
-## Running
+## Running a lecture
 
-### One-click (Windows)
+You can run **with or without** the robot — set `audio_output` and `body` in `config.yaml`
+(`pc`/`console` for no robot, `nao`/`nao` for the real robot).
 
-Double-click **`start_nao_sensei.bat`**. It starts Ollama (and warms the model), redeploys
-and restarts the NAO bridge, verifies the robot's health, then launches the app — all in a
-few seconds from a cold start.
-
-### Manual
+### Option A — manual (works on any machine)
 
 ```bash
 conda activate nao-sensei
 python -m app.main                    # run the lecture end-to-end
-python -m app.main --validate <deck>  # validate a .pptx deck without running it
+python -m app.main --validate <deck>  # just validate a .pptx without running it
 ```
 
-The app opens PowerPoint, positions the slideshow on the projector display, and then **waits
-in `READY`** for the operator to press **Start** — this is deliberate (it gives students time
-to connect first), not a hang.
+The app opens PowerPoint, positions the slideshow on the projector, and then **waits in
+`READY`** for the operator to press **Start** — this is deliberate (it gives students time to
+connect first), *not* a hang.
 
 At startup it prints a **student join URL + QR code** and the **operator console URL**. Point
-phones at the QR; open the operator console to drive the lecture:
+the phones at the QR code, then open the operator console and press **Start**:
 
 ```
-http://localhost:8000/operator?token=<server.operator_token>
+http://localhost:8000/operator?token=<your operator_token>
 ```
 
-The operator console shows live state, the question queue, component health (LLM/STT/TTS/
-PowerPoint/NAO), and the controls: **Pause · Resume · Skip section · Skip question ·
-Clear queue · End lecture · Exit**, plus slide-fault recovery (**Reopen deck** /
-**Resume without slides**).
+The operator console shows live state, the question queue, and component health
+(LLM / STT / TTS / PowerPoint / NAO), with controls for **Pause · Resume · Skip section ·
+Skip question · Clear queue · End lecture · Exit**, plus slide-fault recovery
+(**Reopen deck** / **Resume without slides**).
 
-### Testing
+### Option B — one-click (this project's machine)
+
+Double-click **`start_nao_sensei.bat`**. It starts Ollama, warms the model, redeploys and
+restarts the on-robot bridge, then launches the app. It reads your machine paths from `.env`
+(see [Configuration](#3-configuration)) — so set that up first. The manual commands above
+need no `.env`.
+
+---
+
+## Testing
 
 ```bash
 python -m pytest tests/        # unit tests (sentence splitter, notes parser, joint whitelist)
-python -m tests.smoke_audio    # audio pipeline smoke check
+python -m tests.smoke_audio    # audio-pipeline smoke check
 ```
 
 ---
 
-## Design highlights
+## Project structure
 
-- **One asyncio event loop, no locks.** All mutable state is read/written from a single
-  thread; worker threads only return values or post back. Concurrency is a design invariant,
-  not an afterthought.
-- **Two swap seams (`AudioSink`, `Body`).** PC ↔ robot is a config-key change, validated by
-  diffing — no conditional on the output target leaks into the rest of the codebase.
+A high-level map — the top-level folders are:
+
+| Path | What lives here |
+|---|---|
+| `app/` | The PC application (Python 3.11). The lecture runs as one asyncio coroutine. |
+| `nao_bridge/` | A tiny HTTP server that runs **on the robot** (Python 2.7). Never imported by `app/`. |
+| `content/` | The authored lecture: slides + speaker notes, Q&A material, and the gesture library. |
+| `tests/` | Unit tests. |
+| `voices/` | The Piper voice model (downloaded, not committed). |
+
+Inside `app/`:
+
+```
+app/
+├── main.py            # Entry point (default run + --validate)
+├── config.py          # Loads config.yaml into a typed object
+├── orchestrator.py    # The lecture loop, written as a readable coroutine
+├── state.py           # Lecture state machine
+├── script_parser.py   # .pptx speaker notes → lecture script (+ validation)
+├── slides.py          # PowerPoint control (its own COM thread)
+├── queue.py           # The student question queue
+├── transcript.py      # Per-lecture transcript writer
+├── audio/             # AudioSink seam: PC / NAO output + gapless playback
+├── body/              # Body seam: gesture library, scheduler, console / NAO body
+├── services/          # tts · stt · llm · sentence splitting · moderation
+├── web/               # FastAPI server, student + operator pages, phone tunnel
+└── prompts/           # Q&A system prompt + spoken filler lines
+```
+
+The `logs/`, `sessions/`, and `runtime/audio/` folders exist in the repo but their
+generated contents are intentionally not committed.
+
+---
+
+## Design & safety notes
+
+- **One event loop, no locks.** All mutable state is read/written from a single thread;
+  worker threads only return values or post back. Concurrency is a design invariant.
+- **Two swap seams (`AudioSink`, `Body`).** PC ↔ robot is a config-key change, so no
+  conditional on the output target leaks into the rest of the codebase.
 - **Structural motor safety.** The on-robot bridge enforces a **joint whitelist**: the robot
-  is seated for the entire lecture and *no command can move a leg joint* — refused at the
-  bridge, not by convention. Gestures are validated against real NAO V5 joint limits at load.
-- **Grounded Q&A only.** The LLM answers strictly from the prepared `qa_material.md`; a
-  moderation guardrail and grounding checks keep it from improvising or repeating
-  inappropriate input.
+  is seated for the whole lecture and *no command can move a leg joint* — refused at the
+  bridge, not by convention. Gestures are validated against real NAO V5 joint limits.
+- **Grounded Q&A only.** The LLM answers strictly from the prepared material; a moderation
+  guardrail and grounding checks stop it improvising or repeating inappropriate input.
 - **Fails loudly, degrades gracefully.** Missing config or an un-narrated slide is a hard
   startup error; a mid-lecture failure in Ollama or STT degrades Q&A but never stops the
   lecture.
 
----
-
-## 100% local inference
+### 100% local inference
 
 All AI inference — speech recognition, the language model, and speech synthesis — runs
 **locally on the PC**. No cloud AI service is ever called. The *only* external dependency is
 an optional **Cloudflare quick tunnel** used purely as HTTPS transport for voice questions
-(phones require a secure context to use the microphone); it relays bytes and performs no
+(phones need a secure context to use the microphone); it relays bytes and performs no
 inference. In the default typed-only mode the system is fully offline. See `specs.md` §2
-(NFR-1) and §9.1 for the full rationale and the privacy note.
+(NFR-1) and §9.1 for the full rationale and privacy note.
 
 ---
 
@@ -252,7 +317,7 @@ inference. In the default typed-only mode the system is fully offline. See `spec
 |---|---|
 | [`specs.md`](specs.md) | The authoritative technical specification (v2.2) — requirements, architecture, every seam and safety guarantee. |
 | [`implementationPlan.md`](implementationPlan.md) | The phased, checkpoint-gated build plan the project was implemented against. |
-| [`CLAUDE.md`](CLAUDE.md) | The developer log — working rules and a session-by-session account of what was built, tested on real hardware, and fixed. |
+| [`CLAUDE.md`](CLAUDE.md) | The developer log — working rules and a session-by-session account of what was built, tested on hardware, and fixed. |
 
 ---
 
@@ -269,6 +334,6 @@ humanoid robot.
 Released under the **[MIT License](LICENSE)** © 2026 Michael Naftalishen & Yossef Okropiridze.
 
 You are free to use, modify, and build on this project — the one condition is that the
-copyright notice and license text above are kept in any copy or substantial portion. If you
-use it in your own work, an attribution or citation (see [`CITATION.cff`](CITATION.cff)) is
+copyright notice and license text are kept in any copy or substantial portion. If you use it
+in your own work, an attribution or citation (see [`CITATION.cff`](CITATION.cff)) is
 appreciated.

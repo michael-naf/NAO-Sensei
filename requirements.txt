@@ -1,0 +1,33 @@
+# NAO Sensei — Python dependencies (Python 3.11, Windows)
+# Install with:  pip install -r requirements.txt
+#
+# Note: pywin32 needs a one-time COM registration step after install —
+#   python <site-packages>/pywin32_postinstall.py -install
+# The Piper voice model and the Ollama LLM are NOT pip packages; see the
+# README "Installation" section for how to fetch them.
+
+# ── Text-to-speech (Piper) and audio pipeline ─────────────────────────
+piper-tts==1.6.0
+soxr==1.1.0
+sounddevice==0.5.5
+numpy==2.4.6
+
+# ── Speech-to-text (faster-whisper) ───────────────────────────────────
+faster-whisper==1.2.1
+
+# ── Slides (PowerPoint over COM) ──────────────────────────────────────
+python-pptx==1.0.2
+pywin32==312
+
+# ── Web app (student + operator), REST/WebSocket, phone QR ────────────
+fastapi==0.140.13
+uvicorn[standard]==0.51.0
+httpx==0.28.1
+python-multipart==0.0.32
+qrcode[pil]==8.2
+
+# ── Config ────────────────────────────────────────────────────────────
+PyYAML==6.0.3
+
+# ── Tests ─────────────────────────────────────────────────────────────
+pytest==9.1.1
