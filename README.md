@@ -4,7 +4,7 @@
 
 ### A humanoid robot that teaches a real class — and answers back.
 
-*A NAO V5 stands at the front of the room, narrates its own slides, gestures as it speaks,*
+*A NAO V5 sits at the front of the room, narrates its own slides, gestures as it speaks,*
 *and takes live questions from students' phones — all with zero cloud AI.*
 
 Project video - https://youtu.be/k1yKS8YM9kg?si=-NBhn129WYrKKXRa
