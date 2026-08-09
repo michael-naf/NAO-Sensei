@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "NAO Sensei — a NAO V5 robot lecturer with checkpoint Q&A"
+abstract: >-
+  NAO Sensei is a human–robot interaction project in which a NAO V5 humanoid
+  delivers a prepared PowerPoint lecture to a small class. It narrates speaker
+  notes verbatim, advances its own slides, and answers student questions at
+  checkpoints. All intelligence (speech-to-text, a local LLM, and text-to-speech)
+  runs on a Windows PC; the robot is an embodied output device driven over a
+  thin HTTP bridge. Built for a university HRI course.
+type: software
+authors:
+  - family-names: Naftalishen
+    given-names: Michael
+  - family-names: Okropiridze
+    given-names: Yossef
+license: MIT
+repository-code: "https://github.com/michael-naf/NAO-Sensei"
+keywords:
+  - human-robot-interaction
+  - NAO
+  - humanoid-robot
+  - text-to-speech
+  - speech-to-text
+  - local-LLM
+  - education

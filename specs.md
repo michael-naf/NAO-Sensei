@@ -75,7 +75,7 @@ Out of scope, by decision:
 
 | ID | Requirement |
 |---|---|
-| NFR-1 | **All inference is local.** Speech recognition, language modelling, and synthesis run on the PC. No cloud AI service is called at any point. Network *transport* may traverse a tunnel when voice input is enabled (§9.1, Mode B); this carries bytes only. |
+| NFR-1 | **All AI inference is local.** Speech recognition, language modelling, and synthesis run entirely on the PC — no cloud AI service is called at any point. The one external dependency is a **Cloudflare quick tunnel**, used *solely* as HTTPS transport when voice input is enabled (§9.1, Mode B): it relays encrypted bytes to `localhost` and performs no inference of any kind. In the default typed-only mode (`server.mode: lan`) the system is fully offline with no third party involved. Cloudflare terminates TLS and therefore sees plaintext — accepted for this demo; see the privacy note in §9.1. |
 | NFR-2 | NAO begins speaking ≤ 1 s after question submission, and begins speaking the *answer* ≤ 6 s after submission (§8). |
 | NFR-3 | A failure in Ollama or STT degrades Q&A but never terminates the lecture (§11). |
 | NFR-4 | The system runs on one Windows PC with ~8 GB VRAM. |

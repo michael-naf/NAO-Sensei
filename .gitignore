@@ -1,9 +1,17 @@
+# ── Python ─────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# ── Virtual environments / secrets ─────────────────────────────────────
 .venv/
 .env
 
+# ── Generated runtime output (keep the folders, drop the contents) ─────
 runtime/audio/*
 !runtime/audio/.gitkeep
 logs/*
@@ -11,8 +19,11 @@ logs/*
 sessions/*
 !sessions/.gitkeep
 
-# Piper voice models — large binaries fetched on demand, not source.
-# Re-download: python -m piper.download_voices --download-dir ./voices <name>
+# ── Large binaries fetched on demand, not source ───────────────────────
+# Piper voice models. Re-download with:
+#   python -m piper.download_voices --download-dir ./voices <name>
 voices/
 
+# ── Local-only working directories ─────────────────────────────────────
 .claude/
+NAO-Video/
