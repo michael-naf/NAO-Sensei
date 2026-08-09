@@ -8,8 +8,17 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg">
   <img alt="Python 3.11" src="https://img.shields.io/badge/Python-3.11-blue.svg">
   <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows-informational.svg">
-  <img alt="Robot: NAO V5" src="https://img.shields.io/badge/Robot-NAO%20V5-orange.svg">
   <img alt="Inference: 100%25 local" src="https://img.shields.io/badge/Inference-100%25%20local-brightgreen.svg">
+</p>
+
+<p align="center">
+  <img alt="NAO V5" src="https://img.shields.io/badge/NAO%20V5-E67E22">
+  <img alt="Human-Robot Interaction" src="https://img.shields.io/badge/Human--Robot%20Interaction-8A2BE2">
+  <img alt="Ollama" src="https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white">
+  <img alt="Llama 3.1" src="https://img.shields.io/badge/Llama%203.1-4B9CD3">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white">
+  <img alt="Piper TTS" src="https://img.shields.io/badge/Piper%20TTS-6C4AB6">
+  <img alt="Whisper STT" src="https://img.shields.io/badge/Whisper%20STT-5A67D8">
 </p>
 
 ---
