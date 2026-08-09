@@ -37,6 +37,7 @@
 - [Project structure](#project-structure)
 - [Design & safety notes](#design--safety-notes)
 - [Documentation](#documentation)
+- [Acknowledgements](#acknowledgements)
 - [Authors](#authors)
 - [License](#license)
 
@@ -318,6 +319,22 @@ inference. In the default typed-only mode the system is fully offline. See `spec
 | [`specs.md`](specs.md) | The authoritative technical specification (v2.2) — requirements, architecture, every seam and safety guarantee. |
 | [`implementationPlan.md`](implementationPlan.md) | The phased, checkpoint-gated build plan the project was implemented against. |
 | [`CLAUDE.md`](CLAUDE.md) | The developer log — working rules and a session-by-session account of what was built, tested on hardware, and fixed. |
+
+---
+
+## Acknowledgements
+
+This project builds on excellent open-source work — each retains its own license:
+
+- **[Ollama](https://ollama.com)** running **Meta Llama 3.1** — the local model that answers
+  questions. *Built with Llama* ([Llama 3.1 Community License](https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/LICENSE)).
+- **[Piper](https://github.com/OHF-Voice/piper1-gpl)** — neural text-to-speech; voice
+  `en_US-ryan-medium` (RyanSpeech dataset).
+- **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** — speech-to-text (OpenAI Whisper).
+- **[FastAPI](https://fastapi.tiangolo.com/)** + **[Uvicorn](https://www.uvicorn.org/)** — the student & operator web apps.
+- **[python-pptx](https://python-pptx.readthedocs.io/)** — reads the deck's speaker notes.
+- **[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)** (`cloudflared`) — HTTPS transport for phone microphone access.
+- **[Aldebaran / SoftBank Robotics](https://www.aldebaran.com/)** — the NAO V5 platform and Choregraphe.
 
 ---
 
