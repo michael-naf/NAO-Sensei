@@ -12,8 +12,7 @@
 <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg">
 <img alt="Python 3.11" src="https://img.shields.io/badge/Python-3.11-blue.svg">
 <img alt="Platform: Windows" src="https://img.shields.io/badge/Platform-Windows-informational.svg">
-<img alt="Inference: 100%25 local" src="https://img.shields.io/badge/Inference-100%25%20local-brightgreen.svg">
-<img alt="Status: MVP" src="https://img.shields.io/badge/Status-Working%20MVP-success.svg">
+<img alt="Status: MVP" src="https://img.shields.io/badge/Status-MVP-success.svg">
 
 <img alt="NAO V5" src="https://img.shields.io/badge/NAO%20V5-E67E22">
 <img alt="Human-Robot Interaction" src="https://img.shields.io/badge/Human--Robot%20Interaction-8A2BE2">
@@ -114,11 +113,11 @@ operator console link. Open the console, press **Start**, and the lecture begins
 
 ```mermaid
 flowchart LR
-    subgraph Phones["📱 Students' phones"]
+    subgraph Phones["📱 Students' device"]
         S["Web app<br/>typed / voice questions"]
     end
 
-    subgraph PC["💻 Windows PC — all intelligence lives here"]
+    subgraph PC["💻 Windows PC — intelligence"]
         direction TB
         ORCH["Orchestrator<br/>(the lecture loop)"]
         LLM["Local LLM<br/>Ollama"]
@@ -128,14 +127,14 @@ flowchart LR
         ORCH --- LLM & STT & TTS & PPTX
     end
 
-    subgraph Robot["🤖 NAO V5 — an output device"]
+    subgraph Robot["🤖 NAO V5 — Humanoid"]
         BR["HTTP bridge<br/>Python 2.7, on-robot"]
-        BODY["Speaker · arms · head<br/>arms only, seated, whitelisted"]
+        BODY["Speaker · arms · head<br/>seated"]
         BR --- BODY
     end
 
     S -->|"HTTPS · Cloudflare tunnel · bytes only"| ORCH
-    ORCH -->|"play audio / perform gesture"| BR
+    ORCH --> BR
     PPTX -->|"HDMI"| PROJ["📽️ Projector"]
 ```
 
