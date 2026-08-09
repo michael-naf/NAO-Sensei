@@ -1,5 +1,7 @@
-audio_output: nao           # pc | nao
-body: nao                   # console | nao          — §12.6
+audio_output: pc            # pc | nao   — 'pc' runs on the PC's own speakers
+body: console               # console | nao          — §12.6
+                            # Shipped defaults run WITHOUT a physical robot.
+                            # Set both to 'nao' to drive a real NAO V5.
 
 lecture:
   pptx_path: ./content/lecture.pptx
@@ -97,7 +99,7 @@ nao:
   # cable stays connected; re-verify with `ping` if it's ever unplugged.
   bridge_url: http://169.254.242.9:8765
   audio_dir: /home/nao/lecture_audio
-  volume: 50                # 0-100, set explicitly at lecture start — §12.5.
+  volume: 70                # 0-100, set explicitly at lecture start — §12.5.
                              # Temporarily lowered for this testing period
                              # (2026-08-06) — restore to a real room-volume
                              # value before an actual demo/lecture.
